@@ -18,6 +18,7 @@ interface Task {
   tags: number[]
   status: Status
   priority: Priority
+  notes: string
   createdAt: string
 }
 
@@ -30,6 +31,7 @@ interface FormattedDeadline {
 }
 
 const openPicker = ref<{ type: 'priority' | 'status'; taskId: number } | null>(null)
+const expandedTaskId = ref<number | null>(null)
 
 const ALL_STATUSES: Status[] = ['unstarted', 'in_progress', 'ready_to_submit', 'done']
 const STATUS_LABELS: Record<Status, string> = {
@@ -126,6 +128,9 @@ onMounted(() => {
         }
         if (!t.startDate) {
           t.startDate = t.createdAt ? t.createdAt.split('T')[0] : today()
+        }
+        if (t.notes === undefined) {
+          t.notes = ''
         }
         return t
       })
@@ -253,6 +258,7 @@ function addTask() {
     tags: [...selectedTags.value],
     status: 'unstarted',
     priority: newPriority.value,
+    notes: '',
     createdAt: new Date().toISOString(),
   })
   input.value = ''
@@ -288,6 +294,12 @@ function setStatus(id: number, s: Status): void {
 
 function remove(id: number): void {
   tasks.value = tasks.value.filter(t => t.id !== id)
+  if (expandedTaskId.value === id) expandedTaskId.value = null
+}
+
+function toggleExpand(id: number): void {
+  openPicker.value = null
+  expandedTaskId.value = expandedTaskId.value === id ? null : id
 }
 
 function clearDone() {
@@ -534,8 +546,9 @@ function deadlineColor(task: Task): string {
         v-for="task in sorted"
         :key="task.id"
         class="task"
-        :class="{ 'task-done': task.status === 'done', 'task-future': isFuture(task) }"
+        :class="{ 'task-done': task.status === 'done', 'task-future': isFuture(task), 'task-expanded': expandedTaskId === task.id }"
         :style="{ borderLeftColor: borderColor(task), zIndex: openPicker?.taskId === task.id ? 200 : undefined }"
+        @click="toggleExpand(task.id)"
       >
         <div class="status-picker-wrap">
           <button
@@ -582,6 +595,7 @@ function deadlineColor(task: Task): string {
         <div class="task-content">
           <div class="task-top">
             <span class="task-text" :class="{ 'text-done': task.status === 'done' }">{{ task.text }}</span>
+            <span v-if="task.notes" class="notes-indicator" title="has notes">≡</span>
             <span v-if="isFuture(task)" class="start-label">{{ startLabel(task) }}</span>
             <span
               v-if="formatDate(task.deadline)"
@@ -602,9 +616,17 @@ function deadlineColor(task: Task): string {
               }"
             >{{ getTag(tagId)?.name }}</span>
           </div>
+          <div v-if="expandedTaskId === task.id" class="task-notes" @click.stop>
+            <textarea
+              class="notes-textarea"
+              v-model="task.notes"
+              placeholder="add notes..."
+              rows="3"
+            ></textarea>
+          </div>
         </div>
 
-        <button class="remove-btn" @click="remove(task.id)">×</button>
+        <button class="remove-btn" @click.stop="remove(task.id)">×</button>
       </div>
     </div>
   </div>
@@ -1196,6 +1218,45 @@ function deadlineColor(task: Task): string {
   inset: 0;
   z-index: 99;
 }
+
+/* Notes */
+.task { cursor: pointer; }
+
+.notes-indicator {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  color: #555;
+  flex-shrink: 0;
+  line-height: 1;
+  transition: color 0.15s;
+}
+
+.task:hover .notes-indicator { color: #888; }
+
+.task-notes {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(128, 128, 128, 0.1);
+}
+
+.notes-textarea {
+  width: 100%;
+  padding: 8px 10px;
+  font-size: 13px;
+  font-family: 'DM Sans', sans-serif;
+  border: 1px solid rgba(128, 128, 128, 0.2);
+  border-radius: 6px;
+  background: rgba(128, 128, 128, 0.06);
+  color: #ccc;
+  outline: none;
+  resize: vertical;
+  box-sizing: border-box;
+  transition: border-color 0.15s;
+  line-height: 1.5;
+}
+
+.notes-textarea:focus { border-color: rgba(100, 180, 255, 0.35); }
+.notes-textarea::placeholder { color: #444; }
 
 .priority-picker {
   position: absolute;
