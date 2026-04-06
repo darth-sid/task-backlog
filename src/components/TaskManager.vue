@@ -14,6 +14,7 @@ interface Task {
   id: number
   text: string
   deadline: string | null
+  startDate: string
   tags: number[]
   status: Status
   priority: Priority
@@ -75,6 +76,7 @@ const tasks = ref<Task[]>([])
 const tags = ref<Tag[]>([])
 const input = ref('')
 const deadline = ref('')
+const newStartDate = ref('')
 const newPriority = ref<Priority>('medium')
 const selectedTags = ref<number[]>([])
 const filter = ref<FilterMode>('active')
@@ -104,6 +106,9 @@ onMounted(() => {
       tasks.value = parsed.map((t: Task & { done?: boolean }) => {
         if (!t.status) {
           t.status = t.done ? 'done' : 'unstarted'
+        }
+        if (!t.startDate) {
+          t.startDate = t.createdAt ? t.createdAt.split('T')[0] : today()
         }
         return t
       })
@@ -141,6 +146,27 @@ watch(activePriorities, (active) => {
     newPriority.value = active[Math.floor((active.length - 1) / 2)]
   }
 })
+
+function today(): string {
+  return new Date().toISOString().split('T')[0]
+}
+
+function daysFromToday(dateStr: string): number {
+  const now = new Date()
+  now.setHours(0, 0, 0, 0)
+  const d = new Date(dateStr + 'T00:00:00')
+  return Math.ceil((d.getTime() - now.getTime()) / (1000 * 60 * 60 * 24))
+}
+
+function isFuture(task: Task): boolean {
+  return !!task.startDate && daysFromToday(task.startDate) > 0
+}
+
+function startLabel(task: Task): string | null {
+  if (!task.startDate) return null
+  const diff = daysFromToday(task.startDate)
+  return diff > 0 ? `starts in ${diff}d` : null
+}
 
 function formatDate(dateStr: string | null): FormattedDeadline | null {
   if (!dateStr) return null
@@ -187,6 +213,9 @@ const sorted = computed(() => {
     const aDone = a.status === 'done'
     const bDone = b.status === 'done'
     if (aDone !== bDone) return aDone ? 1 : -1
+    const aFuture = isFuture(a)
+    const bFuture = isFuture(b)
+    if (aFuture !== bFuture) return aFuture ? 1 : -1
     const pa = PRIORITY_RANK.get(a.priority ?? DEFAULT_PRIORITY)!
     const pb = PRIORITY_RANK.get(b.priority ?? DEFAULT_PRIORITY)!
     if (pa !== pb) return pa - pb
@@ -204,6 +233,7 @@ function addTask() {
     id: Date.now(),
     text,
     deadline: deadline.value || null,
+    startDate: newStartDate.value || today(),
     tags: [...selectedTags.value],
     status: 'unstarted',
     priority: newPriority.value,
@@ -211,6 +241,7 @@ function addTask() {
   })
   input.value = ''
   deadline.value = ''
+  newStartDate.value = ''
   selectedTags.value = []
   nextTick(() => inputEl.value?.focus())
 }
@@ -231,7 +262,11 @@ function setPriority(id: number, p: Priority): void {
 
 function setStatus(id: number, s: Status): void {
   const task = tasks.value.find(t => t.id === id)
-  if (task) task.status = s
+  if (task) {
+    const wasDone = task.status === 'done'
+    task.status = s
+    if (wasDone && s !== 'done') filter.value = 'all'
+  }
   openPicker.value = null
 }
 
@@ -300,7 +335,7 @@ function getTag(tagId: number): Tag | undefined {
 }
 
 function borderColor(task: Task): string {
-  if (task.status === 'done') return 'transparent'
+  if (task.status === 'done' || isFuture(task)) return 'transparent'
   const dl = formatDate(task.deadline)
   return dl ? deadlineColors[dl.status] : 'transparent'
 }
@@ -347,6 +382,14 @@ function deadlineColor(task: Task): string {
         placeholder="what needs doing?"
         v-model="input"
         @keydown.enter="addTask"
+      />
+      <input
+        type="date"
+        class="date-input date-input-start"
+        :class="{ 'has-value': newStartDate }"
+        v-model="newStartDate"
+        :min="today()"
+        title="Start date (optional)"
       />
       <input
         type="date"
@@ -475,8 +518,8 @@ function deadlineColor(task: Task): string {
         v-for="task in sorted"
         :key="task.id"
         class="task"
-        :class="{ 'task-done': task.status === 'done' }"
-        :style="{ borderLeftColor: borderColor(task) }"
+        :class="{ 'task-done': task.status === 'done', 'task-future': isFuture(task) }"
+        :style="{ borderLeftColor: borderColor(task), zIndex: openPicker?.taskId === task.id ? 200 : undefined }"
       >
         <div class="status-picker-wrap">
           <button
@@ -523,6 +566,7 @@ function deadlineColor(task: Task): string {
         <div class="task-content">
           <div class="task-top">
             <span class="task-text" :class="{ 'text-done': task.status === 'done' }">{{ task.text }}</span>
+            <span v-if="isFuture(task)" class="start-label">{{ startLabel(task) }}</span>
             <span
               v-if="formatDate(task.deadline)"
               class="deadline"
@@ -692,6 +736,15 @@ function deadlineColor(task: Task): string {
 }
 
 .date-input:focus { border-color: rgba(100, 180, 255, 0.4); }
+
+.date-input-start {
+  width: 110px;
+  opacity: 0.5;
+  transition: opacity 0.15s;
+}
+
+.date-input-start:focus,
+.date-input-start.has-value { opacity: 1; }
 
 .add-btn {
   width: 42px;
@@ -923,6 +976,7 @@ function deadlineColor(task: Task): string {
 }
 
 .task {
+  position: relative;
   display: flex;
   align-items: flex-start;
   gap: 10px;
@@ -934,6 +988,15 @@ function deadlineColor(task: Task): string {
 }
 
 .task-done { opacity: 0.5; }
+.task-future { opacity: 0.4; }
+
+.start-label {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  color: #666;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
 
 .status-picker-wrap {
   position: relative;
