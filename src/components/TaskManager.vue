@@ -62,11 +62,6 @@ const TASKS_KEY = 'sid-tasks'
 const TAGS_KEY = 'sid-tags'
 const SETTINGS_KEY = 'sid-settings'
 
-const PRESET_COLORS: string[] = [
-  '#6ab4ff', '#e55', '#e90', '#da0', '#6c6',
-  '#c77dff', '#ff6b9d', '#20c997', '#ff8c42', '#778da9',
-]
-
 const DEFAULT_PRIORITY: Priority = 'medium'
 const ALL_PRIORITIES: Priority[] = ['critical', 'high', 'medium', 'low', 'minimal']
 const PRIORITY_RANK = new Map(ALL_PRIORITIES.map((p, i) => [p, i] as const))
@@ -119,7 +114,7 @@ const activePriorities = computed((): Priority[] => {
 // Tag creation
 const showTagCreator = ref(false)
 const newTagName = ref('')
-const newTagColor = ref(PRESET_COLORS[0])
+const newTagColor = ref('#6ab4ff')
 const editingTagId = ref<number | null>(null)
 
 onUnmounted(() => {
@@ -468,8 +463,7 @@ function clearDone() {
 function openTagCreator() {
   editingTagId.value = null
   newTagName.value = ''
-  const usedColors = tags.value.map(t => t.color)
-  newTagColor.value = PRESET_COLORS.find(c => !usedColors.includes(c)) || PRESET_COLORS[0]
+  newTagColor.value = '#6ab4ff'
   showTagCreator.value = true
 }
 
@@ -712,15 +706,9 @@ function onKanbanColDragLeave(e: DragEvent): void {
           @keydown.enter="saveTag"
           autofocus
         />
-        <div class="color-picker">
-          <button
-            v-for="color in PRESET_COLORS"
-            :key="color"
-            class="color-swatch"
-            :class="{ active: newTagColor === color }"
-            :style="{ background: color }"
-            @click="newTagColor = color"
-          />
+        <div class="color-picker-row">
+          <div class="color-swatch-preview" :style="{ background: newTagColor }"></div>
+          <input type="color" class="color-input-native" v-model="newTagColor" />
         </div>
         <div class="tag-creator-preview">
           <span
@@ -1407,24 +1395,30 @@ function onKanbanColDragLeave(e: DragEvent): void {
 
 .tag-name-input:focus { border-color: rgba(100, 180, 255, 0.4); }
 
-.color-picker {
+.color-picker-row {
   display: flex;
-  gap: 6px;
+  align-items: center;
+  gap: 10px;
   margin-bottom: 10px;
-  flex-wrap: wrap;
 }
 
-.color-swatch {
-  width: 22px;
-  height: 22px;
+.color-swatch-preview {
+  width: 28px;
+  height: 28px;
   border-radius: 50%;
-  border: 2px solid transparent;
-  cursor: pointer;
-  transition: all 0.15s;
-  padding: 0;
+  flex-shrink: 0;
+  border: 2px solid rgba(255, 255, 255, 0.15);
 }
 
-.color-swatch.active { border-color: #fff; transform: scale(1.15); }
+.color-input-native {
+  width: 36px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid rgba(128, 128, 128, 0.25);
+  border-radius: 6px;
+  background: rgba(128, 128, 128, 0.08);
+  cursor: pointer;
+}
 
 .tag-creator-preview { margin-bottom: 12px; }
 
