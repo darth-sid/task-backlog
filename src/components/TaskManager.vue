@@ -996,31 +996,6 @@ function onKanbanColDragLeave(e: DragEvent): void {
             <div class="pin-tile-content">
               <div class="pin-tile-header">
                 <div class="pin-tile-controls">
-                  <div class="status-picker-wrap pin-status-wrap">
-                    <button
-                      type="button"
-                      class="task-status-btn pin-task-status-btn"
-                      :style="{ color: STATUS_COLORS[task.status] }"
-                      :title="`status: ${task.status}`"
-                      @mousedown.stop
-                      @click.stop.prevent="togglePicker('status', task.id)"
-                    >{{ STATUS_LABELS[task.status] }}</button>
-                    <div v-if="openPicker?.type === 'status' && openPicker.taskId === task.id" class="status-picker pin-status-picker" @mousedown.stop @click.stop>
-                      <button
-                        v-for="s in ALL_STATUSES"
-                        :key="s"
-                        type="button"
-                        class="status-picker-option"
-                        :class="{ active: task.status === s }"
-                        @mousedown.stop
-                        @click.stop.prevent="setStatus(task.id, s)"
-                      >
-                        <span class="status-dot" :style="{ background: STATUS_COLORS[s] }"></span>
-                        <span>{{ STATUS_LABELS[s] }}</span>
-                      </button>
-                    </div>
-                  </div>
-
                   <div class="priority-picker-wrap pin-priority-wrap">
                     <button
                       type="button"
@@ -1048,13 +1023,13 @@ function onKanbanColDragLeave(e: DragEvent): void {
                 </div>
 
                 <div class="pin-tile-actions">
+                  <span v-if="task.notes" class="notes-indicator" title="has notes">≡</span>
                   <button class="pin-tile-remove" @click.stop="remove(task.id)" title="Remove">×</button>
                 </div>
               </div>
 
               <div class="pin-tile-main">
                 <span class="pin-tile-text" :class="{ 'text-done': task.status === 'done' }">{{ task.text }}</span>
-                <span v-if="task.notes" class="notes-indicator" title="has notes">≡</span>
               </div>
               <div class="pin-tile-meta">
                 <span v-if="isFuture(task)" class="start-label">{{ startLabel(task) }}</span>
@@ -1072,6 +1047,30 @@ function onKanbanColDragLeave(e: DragEvent): void {
                     borderColor: getTag(tagId)?.color + '40',
                   }"
                 >{{ getTag(tagId)?.name }}</span>
+              </div>
+              <div class="status-picker-wrap pin-status-wrap pin-status-wrap-bottom">
+                <button
+                  type="button"
+                  class="task-status-btn pin-task-status-btn"
+                  :style="{ color: STATUS_COLORS[task.status] }"
+                  :title="`status: ${task.status}`"
+                  @mousedown.stop
+                  @click.stop.prevent="togglePicker('status', task.id)"
+                >{{ STATUS_LABELS[task.status] }}</button>
+                <div v-if="openPicker?.type === 'status' && openPicker.taskId === task.id" class="status-picker pin-status-picker" @mousedown.stop @click.stop>
+                  <button
+                    v-for="s in ALL_STATUSES"
+                    :key="s"
+                    type="button"
+                    class="status-picker-option"
+                    :class="{ active: task.status === s }"
+                    @mousedown.stop
+                    @click.stop.prevent="setStatus(task.id, s)"
+                  >
+                    <span class="status-dot" :style="{ background: STATUS_COLORS[s] }"></span>
+                    <span>{{ STATUS_LABELS[s] }}</span>
+                  </button>
+                </div>
               </div>
               <div v-if="openPinnedNotesTaskId === task.id" class="pin-notes-popup" @click.stop>
                 <div class="pin-notes-popup-header">
@@ -1511,7 +1510,7 @@ function onKanbanColDragLeave(e: DragEvent): void {
 .task {
   position: relative;
   display: flex;
-  align-items: flex-start;
+  align-items: baseline;
   gap: 10px;
   padding: 10px 12px;
   border-radius: 8px;
@@ -1534,12 +1533,12 @@ function onKanbanColDragLeave(e: DragEvent): void {
 .status-picker-wrap {
   position: relative;
   flex-shrink: 0;
-  margin-top: 2px;
 }
 
 .task-status-btn {
   font-family: 'JetBrains Mono', monospace;
   font-size: 10px;
+  line-height: 1;
   background: none;
   border: none;
   cursor: pointer;
@@ -1712,7 +1711,6 @@ function onKanbanColDragLeave(e: DragEvent): void {
 .priority-picker-wrap {
   position: relative;
   flex-shrink: 0;
-  margin-top: 7px;
 }
 
 .task-priority-dot {
@@ -1952,6 +1950,7 @@ function onKanbanColDragLeave(e: DragEvent): void {
 .pin-status-wrap,
 .pin-priority-wrap {
   flex-shrink: 0;
+  margin-top: 0;
 }
 
 .pin-task-status-btn {
@@ -1960,9 +1959,14 @@ function onKanbanColDragLeave(e: DragEvent): void {
   line-height: 1;
 }
 
+.pin-status-wrap-bottom {
+  margin-top: 6px;
+}
+
 .pin-status-picker {
   left: -4px;
-  top: 16px;
+  top: auto;
+  bottom: calc(100% + 4px);
 }
 
 .pin-priority-picker {
@@ -2072,6 +2076,7 @@ function onKanbanColDragLeave(e: DragEvent): void {
 }
 
 .pin-tile:hover .pin-tile-remove { opacity: 0.8; }
+.pin-tile:hover .notes-indicator { color: #888; }
 .pin-tile-remove:hover { opacity: 1 !important; color: #e55; }
 
 /* View toggle */
