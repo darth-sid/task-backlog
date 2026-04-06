@@ -40,6 +40,8 @@ const isPinboardDragActive = ref(false)
 const draggedTaskWasPinned = ref(false)
 const dragCompletedInPinboard = ref(false)
 const pinboardGridEl = ref<HTMLElement | null>(null)
+const kanbanDraggedTaskId = ref<number | null>(null)
+const kanbanDragOverStatus = ref<Status | null>(null)
 
 const ALL_STATUSES: Status[] = ['unstarted', 'in_progress', 'ready_to_submit', 'done']
 const FILTER_MODES: FilterMode[] = ['active', 'all', 'done']
@@ -107,7 +109,7 @@ const filterTag = ref<number | null>(null)
 const inputEl = ref<HTMLInputElement | null>(null)
 
 // Settings
-const settings = ref({ priorityCount: 3, showPinboard: true })
+const settings = ref({ priorityCount: 3, showPinboard: true, viewMode: 'list' as 'list' | 'kanban' })
 const showSettings = ref(false)
 
 const activePriorities = computed((): Priority[] => {
@@ -243,6 +245,19 @@ function deadlineRank(task: Task): number {
   return 3
 }
 
+function compareTasks(a: Task, b: Task): number {
+  const aFuture = isFuture(a)
+  const bFuture = isFuture(b)
+  if (aFuture !== bFuture) return aFuture ? 1 : -1
+  const pa = PRIORITY_RANK.get(a.priority ?? DEFAULT_PRIORITY)!
+  const pb = PRIORITY_RANK.get(b.priority ?? DEFAULT_PRIORITY)!
+  if (pa !== pb) return pa - pb
+  const ra = deadlineRank(a)
+  const rb = deadlineRank(b)
+  if (ra !== rb) return ra - rb
+  return a.id - b.id
+}
+
 const sorted = computed(() => {
   let filtered = tasks.value.filter(t => {
     if (settings.value.showPinboard && isPinned(t)) return false
@@ -258,16 +273,7 @@ const sorted = computed(() => {
     const aDone = a.status === 'done'
     const bDone = b.status === 'done'
     if (aDone !== bDone) return aDone ? 1 : -1
-    const aFuture = isFuture(a)
-    const bFuture = isFuture(b)
-    if (aFuture !== bFuture) return aFuture ? 1 : -1
-    const pa = PRIORITY_RANK.get(a.priority ?? DEFAULT_PRIORITY)!
-    const pb = PRIORITY_RANK.get(b.priority ?? DEFAULT_PRIORITY)!
-    if (pa !== pb) return pa - pb
-    const ra = deadlineRank(a)
-    const rb = deadlineRank(b)
-    if (ra !== rb) return ra - rb
-    return a.id - b.id
+    return compareTasks(a, b)
   })
 })
 
@@ -526,6 +532,60 @@ function deadlineColor(task: Task): string {
   const dl = formatDate(task.deadline)
   return dl ? deadlineColors[dl.status] : '#888'
 }
+
+const KANBAN_COLUMN_LABELS: Record<Status, string> = {
+  unstarted: 'unstarted',
+  in_progress: 'in progress',
+  ready_to_submit: 'ready',
+  done: 'done',
+}
+
+const kanbanColumns = computed((): Record<Status, Task[]> => {
+  const map: Record<Status, Task[]> = { unstarted: [], in_progress: [], ready_to_submit: [], done: [] }
+  for (const t of tasks.value) {
+    if (settings.value.showPinboard && isPinned(t)) continue
+    if (filterTag.value !== null && !t.tags?.includes(filterTag.value)) continue
+    map[t.status].push(t)
+  }
+  for (const status of ALL_STATUSES) map[status].sort(compareTasks)
+  return map
+})
+
+function onKanbanDragStart(taskId: number, e: DragEvent): void {
+  kanbanDraggedTaskId.value = taskId
+  if (e.dataTransfer) {
+    e.dataTransfer.effectAllowed = 'move'
+    e.dataTransfer.setData('text/plain', String(taskId))
+  }
+}
+
+function onKanbanDragEnd(): void {
+  kanbanDraggedTaskId.value = null
+  kanbanDragOverStatus.value = null
+}
+
+function onKanbanColDragOver(status: Status, e: DragEvent): void {
+  if (!kanbanDraggedTaskId.value) return
+  e.preventDefault()
+  kanbanDragOverStatus.value = status
+  if (e.dataTransfer) e.dataTransfer.dropEffect = 'move'
+}
+
+function onKanbanColDrop(status: Status, e: DragEvent): void {
+  e.preventDefault()
+  if (kanbanDraggedTaskId.value !== null) {
+    setStatus(kanbanDraggedTaskId.value, status)
+  }
+  kanbanDraggedTaskId.value = null
+  kanbanDragOverStatus.value = null
+}
+
+function onKanbanColDragLeave(e: DragEvent): void {
+  const rt = e.relatedTarget as Node | null
+  const ct = e.currentTarget as Node | null
+  if (ct && rt && ct.contains(rt)) return
+  kanbanDragOverStatus.value = null
+}
 </script>
 
 <template>
@@ -534,6 +594,20 @@ function deadlineColor(task: Task): string {
     <div class="header">
       <h1 class="title">tasks</h1>
       <div class="header-right">
+        <div class="view-toggle">
+          <button
+            class="view-btn"
+            :class="{ active: settings.viewMode === 'list' }"
+            @click="settings.viewMode = 'list'"
+            title="List view"
+          >list</button>
+          <button
+            class="view-btn"
+            :class="{ active: settings.viewMode === 'kanban' }"
+            @click="settings.viewMode = 'kanban'"
+            title="Kanban view"
+          >kanban</button>
+        </div>
         <span class="count">{{ activeCount > 0 ? `${activeCount} pending` : 'all clear' }}</span>
         <button class="settings-btn" :class="{ active: showSettings }" @click="showSettings = !showSettings" title="Settings">⚙</button>
       </div>
@@ -701,7 +775,7 @@ function deadlineColor(task: Task): string {
     <div v-if="openPicker !== null || openPinnedNotesTaskId !== null" class="picker-overlay" @click="closeTransientUi"></div>
 
     <!-- Task list -->
-    <div class="list">
+    <div v-if="settings.viewMode === 'list'" class="list">
       <div v-if="sorted.length === 0" class="empty">
         {{ filter === 'done' ? 'nothing completed yet' : filter === 'active' ? 'nothing to do — nice' : 'no tasks yet' }}
       </div>
@@ -808,6 +882,90 @@ function deadlineColor(task: Task): string {
 
         <span v-if="settings.showPinboard" class="drag-pin-hint" title="Drag to pinboard">⋮⋮</span>
         <button class="remove-btn" @click.stop="remove(task.id)">×</button>
+      </div>
+    </div>
+
+    <!-- Kanban board -->
+    <div v-if="settings.viewMode === 'kanban'" class="kanban-board">
+      <div
+        v-for="status in ALL_STATUSES"
+        :key="status"
+        class="kanban-col"
+        :class="{ 'kanban-col-dragover': kanbanDragOverStatus === status }"
+        @dragover="onKanbanColDragOver(status, $event)"
+        @drop="onKanbanColDrop(status, $event)"
+        @dragleave="onKanbanColDragLeave"
+      >
+        <div class="kanban-col-header">
+          <span class="kanban-col-label" :style="{ color: STATUS_COLORS[status] }">{{ KANBAN_COLUMN_LABELS[status] }}</span>
+          <span class="kanban-col-count">{{ kanbanColumns[status].length }}</span>
+        </div>
+        <div class="kanban-cards">
+          <div v-if="kanbanColumns[status].length === 0" class="kanban-empty">—</div>
+          <div
+            v-for="task in kanbanColumns[status]"
+            :key="task.id"
+            class="kanban-card"
+            :class="{
+              'task-done': task.status === 'done',
+              'task-future': isFuture(task),
+              'kanban-card-dragging': kanbanDraggedTaskId === task.id,
+            }"
+            :style="{ borderLeftColor: borderColor(task) }"
+            draggable="true"
+            @dragstart="onKanbanDragStart(task.id, $event)"
+            @dragend="onKanbanDragEnd"
+          >
+            <div class="kanban-card-top">
+              <div class="priority-picker-wrap kanban-priority-wrap" @mousedown.stop @click.stop>
+                <button
+                  type="button"
+                  class="task-priority-dot"
+                  :style="{ background: PRIORITY_COLORS[task.priority ?? DEFAULT_PRIORITY] }"
+                  :title="`priority: ${task.priority ?? DEFAULT_PRIORITY}`"
+                  @click.stop.prevent="togglePicker('priority', task.id)"
+                ></button>
+                <div v-if="openPicker?.type === 'priority' && openPicker.taskId === task.id" class="priority-picker kanban-priority-picker" @mousedown.stop @click.stop>
+                  <button
+                    v-for="p in activePriorities"
+                    :key="p"
+                    type="button"
+                    class="priority-picker-option"
+                    :class="{ active: (task.priority ?? DEFAULT_PRIORITY) === p }"
+                    @mousedown.stop
+                    @click.stop.prevent="setPriority(task.id, p)"
+                  >
+                    <span class="priority-dot" :style="{ background: PRIORITY_COLORS[p] }"></span>
+                    <span>{{ p }}</span>
+                  </button>
+                </div>
+              </div>
+              <span class="kanban-card-text" :class="{ 'text-done': task.status === 'done' }">{{ task.text }}</span>
+              <button class="kanban-remove-btn" @click.stop="remove(task.id)" title="Remove">×</button>
+            </div>
+            <div class="kanban-card-meta">
+              <span v-if="isFuture(task)" class="start-label">{{ startLabel(task) }}</span>
+              <span
+                v-if="task.deadline"
+                class="deadline"
+                :style="{ color: deadlineColor(task) }"
+              >{{ formatDate(task.deadline)!.text }}</span>
+            </div>
+            <div v-if="task.tags?.length" class="task-tags kanban-tags">
+              <span
+                v-for="tagId in task.tags"
+                :key="tagId"
+                class="tag-pill small"
+                v-show="getTag(tagId)"
+                :style="{
+                  background: getTag(tagId)?.color + '20',
+                  color: getTag(tagId)?.color,
+                  borderColor: getTag(tagId)?.color + '40',
+                }"
+              >{{ getTag(tagId)?.name }}</span>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   </div>
@@ -1921,6 +2079,176 @@ function deadlineColor(task: Task): string {
 
 .pin-tile:hover .pin-tile-remove { opacity: 0.8; }
 .pin-tile-remove:hover { opacity: 1 !important; color: #e55; }
+
+/* View toggle */
+.view-toggle {
+  display: flex;
+  gap: 2px;
+  background: rgba(128, 128, 128, 0.08);
+  border: 1px solid rgba(128, 128, 128, 0.15);
+  border-radius: 8px;
+  padding: 2px;
+}
+
+.view-btn {
+  padding: 3px 10px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: #666;
+  cursor: pointer;
+  transition: all 0.15s;
+  white-space: nowrap;
+}
+
+.view-btn:hover { color: #aaa; }
+
+.view-btn.active {
+  background: rgba(100, 180, 255, 0.15);
+  color: #6ab4ff;
+}
+
+/* Kanban board */
+.kanban-board {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  overflow-x: auto;
+  padding-bottom: 8px;
+}
+
+.kanban-col {
+  flex: 1 1 0;
+  min-width: 120px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border-radius: 10px;
+  border: 1px solid rgba(128, 128, 128, 0.1);
+  background: rgba(128, 128, 128, 0.03);
+  padding: 8px;
+  transition: border-color 0.15s, background 0.15s;
+  min-height: 80px;
+}
+
+.kanban-col-dragover {
+  border-color: rgba(100, 180, 255, 0.35);
+  background: rgba(100, 180, 255, 0.05);
+}
+
+.kanban-col-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 2px 2px 6px;
+  border-bottom: 1px solid rgba(128, 128, 128, 0.1);
+  margin-bottom: 2px;
+}
+
+.kanban-col-label {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.kanban-col-count {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  color: #3a3a3a;
+}
+
+.kanban-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  flex: 1;
+}
+
+.kanban-empty {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  color: #2e2e2e;
+  text-align: center;
+  padding: 12px 0;
+}
+
+.kanban-card {
+  padding: 8px 10px;
+  border-radius: 7px;
+  border-left: 3px solid transparent;
+  background: rgba(128, 128, 128, 0.06);
+  border-top: 1px solid rgba(128, 128, 128, 0.08);
+  border-right: 1px solid rgba(128, 128, 128, 0.08);
+  border-bottom: 1px solid rgba(128, 128, 128, 0.08);
+  transition: background 0.15s, opacity 0.15s;
+  cursor: grab;
+}
+
+.kanban-card:hover { background: rgba(128, 128, 128, 0.1); }
+.kanban-card:active { cursor: grabbing; }
+
+.kanban-card-dragging {
+  opacity: 0.3;
+  cursor: grabbing;
+}
+
+.kanban-card-top {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+.kanban-priority-wrap {
+  flex-shrink: 0;
+  margin-top: 4px;
+}
+
+.kanban-priority-picker {
+  left: 0;
+  transform: none;
+  top: 14px;
+}
+
+.kanban-card-text {
+  font-size: 12px;
+  line-height: 1.35;
+  color: #ccc;
+  word-break: break-word;
+  flex: 1;
+  min-width: 0;
+}
+
+.kanban-remove-btn {
+  background: none;
+  border: none;
+  color: rgba(128, 128, 128, 0.0);
+  font-size: 14px;
+  cursor: pointer;
+  padding: 0;
+  flex-shrink: 0;
+  line-height: 1;
+  transition: color 0.15s;
+}
+
+.kanban-card:hover .kanban-remove-btn { color: rgba(128, 128, 128, 0.4); }
+.kanban-remove-btn:hover { color: #e55 !important; }
+
+.kanban-card-meta {
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+  margin-top: 4px;
+  flex-wrap: wrap;
+}
+
+.kanban-tags {
+  margin-top: 5px;
+}
 
 @media (max-width: 900px) {
   .app-layout {
