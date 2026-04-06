@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, watch, onMounted, nextTick } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
 
 interface Tag {
   id: number
@@ -72,6 +72,18 @@ const PRIORITY_SETS: Record<number, Priority[]> = {
   5: ['critical', 'high', 'medium', 'low', 'minimal'],
 }
 
+const todayStr = ref(new Date().toISOString().split('T')[0])
+let midnightTimer: ReturnType<typeof setTimeout> | null = null
+
+function scheduleMidnightTick() {
+  const now = new Date()
+  const msUntilMidnight = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1).getTime() - now.getTime()
+  midnightTimer = setTimeout(() => {
+    todayStr.value = new Date().toISOString().split('T')[0]
+    scheduleMidnightTick()
+  }, msUntilMidnight)
+}
+
 const tasks = ref<Task[]>([])
 const tags = ref<Tag[]>([])
 const input = ref('')
@@ -97,7 +109,12 @@ const newTagName = ref('')
 const newTagColor = ref(PRESET_COLORS[0])
 const editingTagId = ref<number | null>(null)
 
+onUnmounted(() => {
+  if (midnightTimer !== null) clearTimeout(midnightTimer)
+})
+
 onMounted(() => {
+  scheduleMidnightTick()
   try {
     const savedTasks = localStorage.getItem(TASKS_KEY)
     if (savedTasks) {
@@ -148,12 +165,11 @@ watch(activePriorities, (active) => {
 })
 
 function today(): string {
-  return new Date().toISOString().split('T')[0]
+  return todayStr.value
 }
 
 function daysFromToday(dateStr: string): number {
-  const now = new Date()
-  now.setHours(0, 0, 0, 0)
+  const now = new Date(todayStr.value + 'T00:00:00')
   const d = new Date(dateStr + 'T00:00:00')
   return Math.ceil((d.getTime() - now.getTime()) / (1000 * 60 * 60 * 24))
 }
