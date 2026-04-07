@@ -77,9 +77,9 @@ const PRIORITY_COLORS: Record<Priority, string> = {
 }
 const PRIORITY_SETS: Record<number, Priority[]> = {
   1: ['medium'],
-  2: ['high', 'low'],
+  2: ['high', 'medium'],
   3: ['high', 'medium', 'low'],
-  4: ['critical', 'high', 'low', 'minimal'],
+  4: ['critical', 'high', 'medium', 'low'],
   5: ['critical', 'high', 'medium', 'low', 'minimal'],
 }
 
@@ -113,6 +113,31 @@ const showSettings = ref(false)
 const activePriorities = computed((): Priority[] => {
   return PRIORITY_SETS[settings.value.priorityCount] ?? PRIORITY_SETS[3]
 })
+
+function priorityRank(priority: Priority): number {
+  return PRIORITY_RANK.get(priority) ?? PRIORITY_RANK.get(DEFAULT_PRIORITY)!
+}
+
+function projectPriority(priority: Priority, active: Priority[] = activePriorities.value): Priority {
+  if (active.includes(priority)) return priority
+
+  let best = active[0]
+  let bestDistance = Infinity
+
+  for (const candidate of active) {
+    const distance = Math.abs(priorityRank(candidate) - priorityRank(priority))
+    if (distance < bestDistance || (distance === bestDistance && priorityRank(candidate) > priorityRank(best))) {
+      best = candidate
+      bestDistance = distance
+    }
+  }
+
+  return best
+}
+
+function taskDisplayPriority(task: Task): Priority {
+  return projectPriority(task.priority ?? DEFAULT_PRIORITY)
+}
 
 // Tag creation
 const showTagCreator = ref(false)
@@ -175,15 +200,9 @@ watch(settings, (val) => {
 }, { deep: true })
 
 watch(activePriorities, (active) => {
-  // migrate tasks whose priority was removed
-  tasks.value.forEach(task => {
-    if (!active.includes(task.priority ?? DEFAULT_PRIORITY)) {
-      task.priority = active[active.length - 1]
-    }
-  })
   // reset new task priority if no longer valid
   if (!active.includes(newPriority.value)) {
-    newPriority.value = active[Math.floor((active.length - 1) / 2)]
+    newPriority.value = projectPriority(newPriority.value, active)
   }
 })
 
@@ -247,8 +266,8 @@ function compareTasks(a: Task, b: Task): number {
   const aFuture = isFuture(a)
   const bFuture = isFuture(b)
   if (aFuture !== bFuture) return aFuture ? 1 : -1
-  const pa = PRIORITY_RANK.get(a.priority ?? DEFAULT_PRIORITY)!
-  const pb = PRIORITY_RANK.get(b.priority ?? DEFAULT_PRIORITY)!
+  const pa = priorityRank(taskDisplayPriority(a))
+  const pb = priorityRank(taskDisplayPriority(b))
   if (pa !== pb) return pa - pb
   const ra = deadlineRank(a)
   const rb = deadlineRank(b)
@@ -899,8 +918,8 @@ function onKanbanColDragLeave(e: DragEvent): void {
           <button
             type="button"
             class="task-priority-dot"
-            :style="{ background: PRIORITY_COLORS[task.priority ?? DEFAULT_PRIORITY] }"
-            :title="`priority: ${task.priority ?? DEFAULT_PRIORITY}`"
+            :style="{ background: PRIORITY_COLORS[taskDisplayPriority(task)] }"
+            :title="`priority: ${taskDisplayPriority(task)}`"
             @mousedown.stop
             @click.stop.prevent="togglePicker('priority', task.id)"
           ></button>
@@ -910,7 +929,7 @@ function onKanbanColDragLeave(e: DragEvent): void {
               :key="p"
               type="button"
               class="priority-picker-option"
-              :class="{ active: (task.priority ?? DEFAULT_PRIORITY) === p }"
+              :class="{ active: taskDisplayPriority(task) === p }"
               @mousedown.stop
               @click.stop.prevent="setPriority(task.id, p)"
             >
@@ -1002,8 +1021,8 @@ function onKanbanColDragLeave(e: DragEvent): void {
                 <button
                   type="button"
                   class="task-priority-dot"
-                  :style="{ background: PRIORITY_COLORS[task.priority ?? DEFAULT_PRIORITY] }"
-                  :title="`priority: ${task.priority ?? DEFAULT_PRIORITY}`"
+                  :style="{ background: PRIORITY_COLORS[taskDisplayPriority(task)] }"
+                  :title="`priority: ${taskDisplayPriority(task)}`"
                   @click.stop.prevent="togglePicker('priority', task.id)"
                 ></button>
                 <div v-if="openPicker?.type === 'priority' && openPicker.taskId === task.id" class="priority-picker kanban-priority-picker" @mousedown.stop @click.stop>
@@ -1012,7 +1031,7 @@ function onKanbanColDragLeave(e: DragEvent): void {
                     :key="p"
                     type="button"
                     class="priority-picker-option"
-                    :class="{ active: (task.priority ?? DEFAULT_PRIORITY) === p }"
+                    :class="{ active: taskDisplayPriority(task) === p }"
                     @mousedown.stop
                     @click.stop.prevent="setPriority(task.id, p)"
                   >
@@ -1104,8 +1123,8 @@ function onKanbanColDragLeave(e: DragEvent): void {
                     <button
                       type="button"
                       class="task-priority-dot"
-                      :style="{ background: PRIORITY_COLORS[task.priority ?? DEFAULT_PRIORITY] }"
-                      :title="`priority: ${task.priority ?? DEFAULT_PRIORITY}`"
+                      :style="{ background: PRIORITY_COLORS[taskDisplayPriority(task)] }"
+                      :title="`priority: ${taskDisplayPriority(task)}`"
                       @mousedown.stop
                       @click.stop.prevent="togglePicker('priority', task.id)"
                     ></button>
@@ -1115,7 +1134,7 @@ function onKanbanColDragLeave(e: DragEvent): void {
                         :key="p"
                         type="button"
                         class="priority-picker-option"
-                        :class="{ active: (task.priority ?? DEFAULT_PRIORITY) === p }"
+                        :class="{ active: taskDisplayPriority(task) === p }"
                         @mousedown.stop
                         @click.stop.prevent="setPriority(task.id, p)"
                       >
