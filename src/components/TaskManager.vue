@@ -35,6 +35,9 @@ const openPicker = ref<{ type: 'priority' | 'status'; taskId: number } | null>(n
 const expandedTaskId = ref<number | null>(null)
 const openPinnedNotesTaskId = ref<number | null>(null)
 const draggedTaskId = ref<number | null>(null)
+const draggedTagId = ref<number | null>(null)
+const draggedTagSourceTaskId = ref<number | null>(null)
+const tagDropTaskId = ref<number | null>(null)
 const hoveredPinSlot = ref<number | null>(null)
 const isPinboardDragActive = ref(false)
 const draggedTaskWasPinned = ref(false)
@@ -395,6 +398,63 @@ function onTaskDragEnd(): void {
   dragCompletedInPinboard.value = false
 }
 
+function onTagDragStart(tagId: number, event: DragEvent, sourceTaskId: number | null = null): void {
+  draggedTagId.value = tagId
+  draggedTagSourceTaskId.value = sourceTaskId
+  if (event.dataTransfer) {
+    event.dataTransfer.effectAllowed = sourceTaskId === null ? 'copy' : 'move'
+    event.dataTransfer.setData('text/plain', String(tagId))
+  }
+}
+
+function onTagDragEnd(): void {
+  draggedTagId.value = null
+  draggedTagSourceTaskId.value = null
+  tagDropTaskId.value = null
+}
+
+function canDropTagOnTask(taskId: number): boolean {
+  if (draggedTagId.value === null) return false
+  const task = tasks.value.find(t => t.id === taskId)
+  return !!task && !task.tags.includes(draggedTagId.value)
+}
+
+function onTaskTagDragOver(taskId: number, event: DragEvent): void {
+  if (!canDropTagOnTask(taskId)) return
+  event.preventDefault()
+  tagDropTaskId.value = taskId
+  if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy'
+}
+
+function onTaskTagDragLeave(taskId: number, event: DragEvent): void {
+  const relatedTarget = event.relatedTarget as Node | null
+  const currentTarget = event.currentTarget as Node | null
+  if (currentTarget && relatedTarget && currentTarget.contains(relatedTarget)) return
+  if (tagDropTaskId.value === taskId) tagDropTaskId.value = null
+}
+
+function addTagToTask(taskId: number, tagId: number): void {
+  const task = tasks.value.find(t => t.id === taskId)
+  if (!task || task.tags.includes(tagId)) return
+  task.tags.push(tagId)
+}
+
+function removeTagFromTask(taskId: number, tagId: number): void {
+  const task = tasks.value.find(t => t.id === taskId)
+  if (!task) return
+  task.tags = task.tags.filter(id => id !== tagId)
+}
+
+function onTaskTagDrop(taskId: number, event: DragEvent): void {
+  if (draggedTagId.value === null || !canDropTagOnTask(taskId)) return
+  event.preventDefault()
+  addTagToTask(taskId, draggedTagId.value)
+  if (draggedTagSourceTaskId.value !== null) {
+    removeTagFromTask(draggedTagSourceTaskId.value, draggedTagId.value)
+  }
+  tagDropTaskId.value = null
+}
+
 function onPinSlotDragEnter(slot: number): void {
   hoveredPinSlot.value = canDropIntoPinSlot() ? slot : null
 }
@@ -423,6 +483,16 @@ function onPinboardDragLeave(event: DragEvent): void {
 }
 
 function onDocumentDragOver(event: DragEvent): void {
+  if (draggedTagSourceTaskId.value !== null) {
+    const target = event.target as Node | null
+    const inTaskDropZone = !!target && !!(target as Element).closest?.('.task, .kanban-card, .pin-tile')
+    if (!inTaskDropZone) {
+      event.preventDefault()
+      if (event.dataTransfer) event.dataTransfer.dropEffect = 'move'
+      tagDropTaskId.value = null
+    }
+    return
+  }
   if (!draggedTaskWasPinned.value) return
   const target = event.target as Node | null
   if (pinboardGridEl.value && target && pinboardGridEl.value.contains(target)) return
@@ -432,6 +502,15 @@ function onDocumentDragOver(event: DragEvent): void {
 }
 
 function onDocumentDrop(event: DragEvent): void {
+  if (draggedTagSourceTaskId.value !== null && draggedTagId.value !== null) {
+    const target = event.target as Node | null
+    const inTaskDropZone = !!target && !!(target as Element).closest?.('.task, .kanban-card, .pin-tile')
+    if (!inTaskDropZone) {
+      event.preventDefault()
+      removeTagFromTask(draggedTagSourceTaskId.value, draggedTagId.value)
+    }
+    return
+  }
   if (!draggedTaskWasPinned.value || draggedTaskId.value === null) return
   const target = event.target as Node | null
   if (pinboardGridEl.value && target && pinboardGridEl.value.contains(target)) return
@@ -684,6 +763,9 @@ function onKanbanColDragLeave(e: DragEvent): void {
         }"
         @click="toggleSelectedTag(tag.id)"
         @contextmenu.prevent="editTag(tag)"
+        draggable="true"
+        @dragstart="onTagDragStart(tag.id, $event)"
+        @dragend="onTagDragEnd"
         title="Click to tag · Right-click to edit"
       >{{ tag.name }}</button>
       <button class="new-tag-btn" @click="openTagCreator" title="Create tag">+</button>
@@ -777,11 +859,15 @@ function onKanbanColDragLeave(e: DragEvent): void {
           'task-future': isFuture(task),
           'task-expanded': expandedTaskId === task.id,
           'task-dragging': draggedTaskId === task.id,
+          'task-tag-drop-target': tagDropTaskId === task.id,
         }"
         :style="{ borderLeftColor: borderColor(task), zIndex: openPicker?.taskId === task.id ? 200 : undefined }"
         :draggable="settings.showPinboard"
         @dragstart="onTaskDragStart(task.id, $event)"
         @dragend="onTaskDragEnd"
+        @dragover="onTaskTagDragOver(task.id, $event)"
+        @dragleave="onTaskTagDragLeave(task.id, $event)"
+        @drop.stop="onTaskTagDrop(task.id, $event)"
         @click="toggleExpand(task.id)"
       >
         <div class="status-picker-wrap">
@@ -851,6 +937,9 @@ function onKanbanColDragLeave(e: DragEvent): void {
               :key="tagId"
               class="tag-pill small"
               v-show="getTag(tagId)"
+              draggable="true"
+              @dragstart.stop="onTagDragStart(tagId, $event, task.id)"
+              @dragend="onTagDragEnd"
               :style="{
                 background: getTag(tagId)?.color + '20',
                 color: getTag(tagId)?.color,
@@ -898,11 +987,15 @@ function onKanbanColDragLeave(e: DragEvent): void {
               'task-done': task.status === 'done',
               'task-future': isFuture(task),
               'kanban-card-dragging': kanbanDraggedTaskId === task.id,
+              'task-tag-drop-target': tagDropTaskId === task.id,
             }"
             :style="{ borderLeftColor: borderColor(task) }"
             draggable="true"
             @dragstart="onKanbanDragStart(task.id, $event)"
             @dragend="onKanbanDragEnd"
+            @dragover="onTaskTagDragOver(task.id, $event)"
+            @dragleave="onTaskTagDragLeave(task.id, $event)"
+            @drop.stop="onTaskTagDrop(task.id, $event)"
           >
             <div class="kanban-card-top">
               <div class="priority-picker-wrap kanban-priority-wrap" @mousedown.stop @click.stop>
@@ -945,6 +1038,9 @@ function onKanbanColDragLeave(e: DragEvent): void {
                 :key="tagId"
                 class="tag-pill small"
                 v-show="getTag(tagId)"
+                draggable="true"
+                @dragstart.stop="onTagDragStart(tagId, $event, task.id)"
+                @dragend="onTagDragEnd"
                 :style="{
                   background: getTag(tagId)?.color + '20',
                   color: getTag(tagId)?.color,
@@ -986,11 +1082,19 @@ function onKanbanColDragLeave(e: DragEvent): void {
         <template v-if="task">
           <div
             class="pin-tile"
-            :class="{ 'task-done': task.status === 'done', 'task-future': isFuture(task), 'pin-tile-expanded': openPinnedNotesTaskId === task.id }"
+            :class="{
+              'task-done': task.status === 'done',
+              'task-future': isFuture(task),
+              'pin-tile-expanded': openPinnedNotesTaskId === task.id,
+              'task-tag-drop-target': tagDropTaskId === task.id,
+            }"
             :style="{ borderLeftColor: borderColor(task), zIndex: openPicker?.taskId === task.id || openPinnedNotesTaskId === task.id ? 200 : undefined }"
             draggable="true"
             @dragstart="onTaskDragStart(task.id, $event)"
             @dragend="onTaskDragEnd"
+            @dragover="onTaskTagDragOver(task.id, $event)"
+            @dragleave="onTaskTagDragLeave(task.id, $event)"
+            @drop.stop="onTaskTagDrop(task.id, $event)"
             @click.stop="togglePinnedNotes(task.id)"
           >
             <div class="pin-tile-content">
@@ -1035,19 +1139,6 @@ function onKanbanColDragLeave(e: DragEvent): void {
                 <span v-if="isFuture(task)" class="start-label">{{ startLabel(task) }}</span>
                 <span v-if="formatDate(task.deadline)" class="pin-deadline" :style="{ color: deadlineColor(task) }">{{ formatDate(task.deadline)!.text }}</span>
               </div>
-              <div v-if="task.tags?.length" class="task-tags pin-task-tags">
-                <span
-                  v-for="tagId in task.tags"
-                  :key="tagId"
-                  class="tag-pill small"
-                  v-show="getTag(tagId)"
-                  :style="{
-                    background: getTag(tagId)?.color + '20',
-                    color: getTag(tagId)?.color,
-                    borderColor: getTag(tagId)?.color + '40',
-                  }"
-                >{{ getTag(tagId)?.name }}</span>
-              </div>
               <div class="status-picker-wrap pin-status-wrap pin-status-wrap-bottom">
                 <button
                   type="button"
@@ -1076,6 +1167,22 @@ function onKanbanColDragLeave(e: DragEvent): void {
                 <div class="pin-notes-popup-header">
                   <span class="pin-notes-label">notes</span>
                   <button type="button" class="pin-notes-close" @click.stop="openPinnedNotesTaskId = null">×</button>
+                </div>
+                <div v-if="task.tags?.length" class="task-tags pin-notes-tags">
+                  <span
+                    v-for="tagId in task.tags"
+                    :key="tagId"
+                    class="tag-pill small"
+                    v-show="getTag(tagId)"
+                    draggable="true"
+                    @dragstart.stop="onTagDragStart(tagId, $event, task.id)"
+                    @dragend="onTagDragEnd"
+                    :style="{
+                      background: getTag(tagId)?.color + '20',
+                      color: getTag(tagId)?.color,
+                      borderColor: getTag(tagId)?.color + '40',
+                    }"
+                  >{{ getTag(tagId)?.name }}</span>
                 </div>
                 <textarea
                   class="notes-textarea pin-notes-textarea"
@@ -1311,7 +1418,9 @@ function onKanbanColDragLeave(e: DragEvent): void {
 }
 
 .tag-pill.selectable:hover { opacity: 0.85; }
-.tag-pill.small { padding: 1px 7px; font-size: 10px; cursor: default; }
+.tag-pill.selectable:active { cursor: grabbing; }
+.tag-pill.small { padding: 1px 7px; font-size: 10px; cursor: grab; }
+.tag-pill.small:active { cursor: grabbing; }
 .tag-pill.preview { cursor: default; }
 
 .new-tag-btn {
@@ -1517,6 +1626,11 @@ function onKanbanColDragLeave(e: DragEvent): void {
   background: rgba(128, 128, 128, 0.05);
   border-left: 3px solid transparent;
   transition: all 0.15s;
+}
+
+.task-tag-drop-target {
+  background: rgba(100, 180, 255, 0.1) !important;
+  box-shadow: inset 0 0 0 1px rgba(100, 180, 255, 0.18);
 }
 
 .task-done { opacity: 0.5; }
@@ -2008,10 +2122,6 @@ function onKanbanColDragLeave(e: DragEvent): void {
   white-space: nowrap;
 }
 
-.pin-task-tags {
-  margin-top: 6px;
-}
-
 .pin-notes-textarea {
   min-height: 180px;
   resize: vertical;
@@ -2034,6 +2144,11 @@ function onKanbanColDragLeave(e: DragEvent): void {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.pin-notes-tags {
+  margin-top: 0;
   margin-bottom: 8px;
 }
 
