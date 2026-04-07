@@ -253,13 +253,11 @@ const doneCount = computed(() => tasks.value.filter(t => t.status === 'done').le
 const pinboardSlots = computed(() => PIN_SLOTS.map(slot => tasks.value.find(t => t.pinSlot === slot) ?? null))
 const pinnedCount = computed(() => pinboardSlots.value.filter(Boolean).length)
 
-function deadlineRank(task: Task): number {
-  const dl = formatDate(task.deadline)
-  if (!dl) return 4
-  if (dl.status === 'overdue') return 0
-  if (dl.status === 'today') return 1
-  if (dl.status === 'soon') return 2
-  return 3
+function compareDueDates(a: Task, b: Task): number {
+  if (a.deadline && b.deadline) return a.deadline.localeCompare(b.deadline)
+  if (a.deadline) return -1
+  if (b.deadline) return 1
+  return 0
 }
 
 function compareTasks(a: Task, b: Task): number {
@@ -269,9 +267,8 @@ function compareTasks(a: Task, b: Task): number {
   const pa = priorityRank(taskDisplayPriority(a))
   const pb = priorityRank(taskDisplayPriority(b))
   if (pa !== pb) return pa - pb
-  const ra = deadlineRank(a)
-  const rb = deadlineRank(b)
-  if (ra !== rb) return ra - rb
+  const dueDateOrder = compareDueDates(a, b)
+  if (dueDateOrder !== 0) return dueDateOrder
   return a.id - b.id
 }
 
