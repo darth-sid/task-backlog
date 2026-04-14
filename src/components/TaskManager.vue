@@ -264,11 +264,11 @@ function compareTasks(a: Task, b: Task): number {
   const aFuture = isFuture(a)
   const bFuture = isFuture(b)
   if (aFuture !== bFuture) return aFuture ? 1 : -1
+  const dueDateOrder = compareDueDates(a, b)
+  if (dueDateOrder !== 0) return dueDateOrder
   const pa = priorityRank(taskDisplayPriority(a))
   const pb = priorityRank(taskDisplayPriority(b))
   if (pa !== pb) return pa - pb
-  const dueDateOrder = compareDueDates(a, b)
-  if (dueDateOrder !== 0) return dueDateOrder
   return a.id - b.id
 }
 
