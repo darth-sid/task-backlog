@@ -45,6 +45,7 @@ const dragCompletedInPinboard = ref(false)
 const pinboardGridEl = ref<HTMLElement | null>(null)
 const kanbanDraggedTaskId = ref<number | null>(null)
 const kanbanDragOverStatus = ref<Status | null>(null)
+const focusedCalendarDate = ref<string | null>(null)
 
 const ALL_STATUSES: Status[] = ['unstarted', 'in_progress', 'ready_to_submit', 'done']
 const FILTER_MODES: FilterMode[] = ['active', 'all', 'done']
@@ -107,7 +108,10 @@ const filterTag = ref<number | null>(null)
 const inputEl = ref<HTMLInputElement | null>(null)
 
 // Settings
-const settings = ref({ priorityCount: 3, showPinboard: true, viewMode: 'list' as 'list' | 'kanban' })
+const settings = ref({ priorityCount: 3, showPinboard: true, viewMode: 'list' as 'list' | 'kanban' | 'calendar' })
+
+const calendarYear = ref(new Date().getFullYear())
+const calendarMonth = ref(new Date().getMonth())
 const showSettings = ref(false)
 
 const activePriorities = computed((): Priority[] => {
@@ -145,16 +149,24 @@ const newTagName = ref('')
 const newTagColor = ref('#6ab4ff')
 const editingTagId = ref<number | null>(null)
 
+function onDocumentKeydown(e: KeyboardEvent): void {
+  if (e.key === 'Escape' && focusedCalendarDate.value) {
+    closeCalendarDay()
+  }
+}
+
 onUnmounted(() => {
   if (midnightTimer !== null) clearTimeout(midnightTimer)
   document.removeEventListener('dragover', onDocumentDragOver)
   document.removeEventListener('drop', onDocumentDrop)
+  document.removeEventListener('keydown', onDocumentKeydown)
 })
 
 onMounted(() => {
   scheduleMidnightTick()
   document.addEventListener('dragover', onDocumentDragOver)
   document.addEventListener('drop', onDocumentDrop)
+  document.addEventListener('keydown', onDocumentKeydown)
   try {
     const savedTasks = localStorage.getItem(TASKS_KEY)
     if (savedTasks) {
@@ -675,6 +687,98 @@ function onKanbanColDragLeave(e: DragEvent): void {
   if (ct && rt && ct.contains(rt)) return
   kanbanDragOverStatus.value = null
 }
+
+// Calendar
+function taskOnCalendarDay(t: Task, dateStr: string): boolean {
+  if (t.status === 'done') return false
+  if (filterTag.value !== null && !t.tags?.includes(filterTag.value)) return false
+  return t.deadline === dateStr || (t.startDate === dateStr && dateStr > todayStr.value)
+}
+
+const focusedCalendarTasks = computed((): Task[] => {
+  const d = focusedCalendarDate.value
+  if (!d) return []
+  return tasks.value.filter(t => taskOnCalendarDay(t, d)).sort(compareTasks)
+})
+
+const focusedCalendarDateLabel = computed((): string => {
+  const d = focusedCalendarDate.value
+  if (!d) return ''
+  return new Date(d + 'T00:00:00').toLocaleDateString('en-US', {
+    weekday: 'long', month: 'long', day: 'numeric'
+  })
+})
+
+function openCalendarDay(dateStr: string | null): void {
+  if (!dateStr) return
+  focusedCalendarDate.value = dateStr
+}
+
+function closeCalendarDay(): void {
+  focusedCalendarDate.value = null
+}
+
+const calendarLabel = computed(() => {
+  return new Date(calendarYear.value, calendarMonth.value, 1)
+    .toLocaleDateString('en-US', { month: 'long', year: 'numeric' })
+})
+
+function calendarPrev(): void {
+  if (calendarMonth.value === 0) {
+    calendarMonth.value = 11
+    calendarYear.value--
+  } else {
+    calendarMonth.value--
+  }
+}
+
+function calendarNext(): void {
+  if (calendarMonth.value === 11) {
+    calendarMonth.value = 0
+    calendarYear.value++
+  } else {
+    calendarMonth.value++
+  }
+}
+
+interface CalendarCell {
+  dateStr: string | null
+  tasks: Task[]
+}
+
+const calendarGrid = computed((): CalendarCell[] => {
+  const year = calendarYear.value
+  const month = calendarMonth.value
+  const firstDay = new Date(year, month, 1).getDay()
+  const daysInMonth = new Date(year, month + 1, 0).getDate()
+  const cells: CalendarCell[] = []
+
+  for (let i = 0; i < firstDay; i++) cells.push({ dateStr: null, tasks: [] })
+
+  for (let d = 1; d <= daysInMonth; d++) {
+    const dateStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`
+    const dayTasks = tasks.value.filter(t => taskOnCalendarDay(t, dateStr))
+    dayTasks.sort(compareTasks)
+    cells.push({ dateStr, tasks: dayTasks })
+  }
+
+  while (cells.length < 42) cells.push({ dateStr: null, tasks: [] })
+  return cells
+})
+
+const calendarMonthStr = computed(() => {
+  return `${calendarYear.value}-${String(calendarMonth.value + 1).padStart(2, '0')}`
+})
+
+const unscheduledTasks = computed((): Task[] => {
+  return tasks.value.filter(t => {
+    if (t.status === 'done') return false
+    if (filterTag.value !== null && !t.tags?.includes(filterTag.value)) return false
+    if (t.deadline?.startsWith(calendarMonthStr.value)) return false
+    if (t.startDate?.startsWith(calendarMonthStr.value) && t.startDate > todayStr.value) return false
+    return !t.deadline
+  })
+})
 </script>
 
 <template>
@@ -696,6 +800,12 @@ function onKanbanColDragLeave(e: DragEvent): void {
             @click="settings.viewMode = 'kanban'"
             title="Kanban view"
           >kanban</button>
+          <button
+            class="view-btn"
+            :class="{ active: settings.viewMode === 'calendar' }"
+            @click="settings.viewMode = 'calendar'"
+            title="Calendar view"
+          >cal</button>
         </div>
         <span class="count">{{ activeCount > 0 ? `${activeCount} pending` : 'all clear' }}</span>
         <button class="settings-btn" :class="{ active: showSettings }" @click="showSettings = !showSettings" title="Settings">⚙</button>
@@ -1068,6 +1178,73 @@ function onKanbanColDragLeave(e: DragEvent): void {
         </div>
       </div>
     </div>
+
+    <!-- Calendar view -->
+    <div v-if="settings.viewMode === 'calendar'" class="calendar-view">
+      <div class="calendar-nav">
+        <button class="cal-nav-btn" @click="calendarPrev">‹</button>
+        <span class="calendar-month-label">{{ calendarLabel }}</span>
+        <button class="cal-nav-btn" @click="calendarNext">›</button>
+      </div>
+
+      <div class="calendar-grid">
+        <div class="cal-dow" v-for="d in ['Sun','Mon','Tue','Wed','Thu','Fri','Sat']" :key="d">{{ d }}</div>
+        <div
+          v-for="(cell, i) in calendarGrid"
+          :key="i"
+          class="cal-cell"
+          :class="{
+            'cal-cell-empty': !cell.dateStr,
+            'cal-cell-today': cell.dateStr === todayStr,
+            'cal-cell-past': cell.dateStr !== null && cell.dateStr < todayStr,
+            'cal-cell-clickable': !!cell.dateStr,
+          }"
+          @click="openCalendarDay(cell.dateStr)"
+        >
+          <span v-if="cell.dateStr" class="cal-day-num" :class="{ 'cal-day-today': cell.dateStr === todayStr }">
+            {{ Number(cell.dateStr.split('-')[2]) }}
+          </span>
+          <div class="cal-tasks">
+            <template v-for="task in cell.tasks" :key="task.id">
+              <div
+                class="cal-task-chip"
+                :class="{
+                  'task-done': task.status === 'done',
+                  'cal-chip-future': task.startDate === cell.dateStr && task.deadline !== cell.dateStr && isFuture(task),
+                }"
+                :style="{ borderLeftColor: task.status === 'done' ? 'transparent' : (task.deadline === cell.dateStr ? deadlineColor(task) : 'rgba(128,128,128,0.3)') }"
+                @click.stop="openCalendarDay(cell.dateStr)"
+                :title="task.text"
+              >
+                <span class="priority-dot" :style="{ background: PRIORITY_COLORS[taskDisplayPriority(task)] }"></span>
+                <span class="cal-chip-text" :class="{ 'text-done': task.status === 'done' }">{{ task.text }}</span>
+                <span v-if="task.startDate === cell.dateStr && task.deadline !== cell.dateStr" class="cal-chip-badge">start</span>
+                <span v-else-if="task.deadline === cell.dateStr" class="cal-chip-badge cal-chip-due" :style="{ color: deadlineColor(task) }">due</span>
+              </div>
+            </template>
+          </div>
+        </div>
+      </div>
+
+      <div v-if="unscheduledTasks.length" class="cal-unscheduled">
+        <span class="cal-unscheduled-label">no date</span>
+        <div class="cal-unscheduled-chips">
+          <div
+            v-for="task in unscheduledTasks"
+            :key="task.id"
+            class="cal-task-chip"
+            :class="{ 'task-done': task.status === 'done' }"
+            :style="{ borderLeftColor: 'rgba(128,128,128,0.2)' }"
+            @click.stop
+            :title="task.text"
+          >
+            <span class="priority-dot" :style="{ background: PRIORITY_COLORS[taskDisplayPriority(task)] }"></span>
+            <span class="cal-chip-text">{{ task.text }}</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
   </div>
 
   <!-- Pinboard sidebar -->
@@ -1212,6 +1389,47 @@ function onKanbanColDragLeave(e: DragEvent): void {
         </template>
         <div v-else class="pin-slot-empty">
           <span>{{ slot + 1 }}</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Day focus popup -->
+  <div v-if="focusedCalendarDate" class="cal-day-overlay" @click="closeCalendarDay">
+    <div class="cal-day-popup" @click.stop>
+      <div class="cal-day-popup-header">
+        <span class="cal-day-popup-title">{{ focusedCalendarDateLabel }}</span>
+        <button class="cal-day-popup-close" @click="closeCalendarDay">×</button>
+      </div>
+      <div v-if="focusedCalendarTasks.length === 0" class="cal-day-popup-empty">nothing here</div>
+      <div v-else class="cal-day-popup-tasks">
+        <div
+          v-for="task in focusedCalendarTasks"
+          :key="task.id"
+          class="cal-day-task"
+          :style="{ borderLeftColor: task.deadline === focusedCalendarDate ? deadlineColor(task) : 'rgba(128,128,128,0.3)' }"
+        >
+          <div class="cal-day-task-top">
+            <span class="cal-priority-dot" :style="{ background: PRIORITY_COLORS[taskDisplayPriority(task)] }"></span>
+            <span class="cal-day-task-text">{{ task.text }}</span>
+            <span v-if="task.startDate === focusedCalendarDate && task.deadline !== focusedCalendarDate" class="cal-chip-badge">start</span>
+            <span v-if="task.deadline === focusedCalendarDate" class="cal-chip-badge cal-chip-due" :style="{ color: deadlineColor(task) }">{{ formatDate(task.deadline)!.text }}</span>
+            <span class="cal-day-status" :style="{ color: STATUS_COLORS[task.status] }">{{ STATUS_LABELS[task.status] }}</span>
+          </div>
+          <div v-if="task.tags?.length" class="task-tags" style="margin-top: 5px;">
+            <span
+              v-for="tagId in task.tags"
+              :key="tagId"
+              class="tag-pill small"
+              v-show="getTag(tagId)"
+              :style="{
+                background: getTag(tagId)?.color + '20',
+                color: getTag(tagId)?.color,
+                borderColor: getTag(tagId)?.color + '40',
+              }"
+            >{{ getTag(tagId)?.name }}</span>
+          </div>
+          <div v-if="task.notes" class="cal-day-task-notes">{{ task.notes }}</div>
         </div>
       </div>
     </div>
@@ -2395,6 +2613,305 @@ function onKanbanColDragLeave(e: DragEvent): void {
     width: 100%;
     order: -1;
   }
+}
+
+/* Calendar view */
+.calendar-view {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.calendar-nav {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 4px;
+}
+
+.cal-nav-btn {
+  background: none;
+  border: 1px solid rgba(128, 128, 128, 0.2);
+  border-radius: 6px;
+  color: #888;
+  font-size: 16px;
+  line-height: 1;
+  padding: 4px 10px;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+}
+
+.cal-nav-btn:hover { color: #ccc; border-color: rgba(128, 128, 128, 0.4); }
+
+.calendar-month-label {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 13px;
+  color: #aaa;
+  letter-spacing: 0.03em;
+}
+
+.calendar-grid {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 3px;
+}
+
+.cal-dow {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  color: #444;
+  text-align: center;
+  padding: 4px 0 6px;
+  letter-spacing: 0.04em;
+}
+
+.cal-cell {
+  min-height: 76px;
+  padding: 5px 6px 6px;
+  border: 1px solid rgba(128, 128, 128, 0.1);
+  border-radius: 6px;
+  background: rgba(128, 128, 128, 0.025);
+  transition: border-color 0.15s;
+  overflow: hidden;
+}
+
+.cal-cell-empty {
+  border-color: transparent;
+  background: transparent;
+}
+
+.cal-cell-today {
+  border-color: rgba(100, 180, 255, 0.3);
+  background: rgba(100, 180, 255, 0.04);
+}
+
+.cal-cell-past {
+  opacity: 0.5;
+}
+
+.cal-day-num {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  color: #444;
+  display: block;
+  margin-bottom: 4px;
+  line-height: 1;
+}
+
+.cal-day-today {
+  color: #6ab4ff;
+}
+
+.cal-tasks {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.cal-task-chip {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 5px 2px 4px;
+  border-radius: 4px;
+  border-left: 2px solid transparent;
+  background: rgba(128, 128, 128, 0.07);
+  font-size: 11px;
+  cursor: pointer;
+  transition: background 0.12s;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.cal-task-chip:hover { background: rgba(128, 128, 128, 0.14); }
+
+.cal-chip-future {
+  opacity: 0.5;
+}
+
+.cal-task-chip .priority-dot {
+  flex-shrink: 0;
+  width: 5px;
+  height: 5px;
+}
+
+.cal-chip-text {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  color: #bbb;
+  line-height: 1.3;
+}
+
+.cal-chip-badge {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 8px;
+  color: #555;
+  flex-shrink: 0;
+  letter-spacing: 0.02em;
+}
+
+.cal-chip-due {
+  font-weight: 500;
+}
+
+.cal-unscheduled {
+  margin-top: 4px;
+  padding-top: 12px;
+  border-top: 1px solid rgba(128, 128, 128, 0.12);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.cal-unscheduled-label {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  color: #444;
+  letter-spacing: 0.04em;
+}
+
+.cal-unscheduled-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.cal-unscheduled-chips .cal-task-chip {
+  max-width: 200px;
+}
+
+.cal-cell-clickable {
+  cursor: pointer;
+}
+
+.cal-cell-clickable:hover {
+  border-color: rgba(128, 128, 128, 0.25);
+  background: rgba(128, 128, 128, 0.05);
+}
+
+/* Day focus popup */
+.cal-day-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 300;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  box-sizing: border-box;
+}
+
+.cal-day-popup {
+  background: #1c1c22;
+  border: 1px solid rgba(128, 128, 128, 0.22);
+  border-radius: 12px;
+  box-shadow: 0 20px 48px rgba(0, 0, 0, 0.55);
+  width: 100%;
+  max-width: 440px;
+  max-height: 80vh;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+.cal-day-popup-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 16px 12px;
+  border-bottom: 1px solid rgba(128, 128, 128, 0.12);
+  position: sticky;
+  top: 0;
+  background: #1c1c22;
+  z-index: 1;
+}
+
+.cal-day-popup-title {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  color: #aaa;
+  letter-spacing: 0.03em;
+}
+
+.cal-day-popup-close {
+  background: none;
+  border: none;
+  color: #666;
+  font-size: 18px;
+  cursor: pointer;
+  padding: 0 2px;
+  line-height: 1;
+  transition: color 0.15s;
+}
+
+.cal-day-popup-close:hover { color: #bbb; }
+
+.cal-day-popup-empty {
+  padding: 32px 16px;
+  text-align: center;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  color: #444;
+}
+
+.cal-day-popup-tasks {
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.cal-day-task {
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: rgba(128, 128, 128, 0.06);
+  border-left: 3px solid transparent;
+}
+
+.cal-day-task-top {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.cal-priority-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  display: inline-block;
+}
+
+.cal-day-status {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  opacity: 0.7;
+  flex-shrink: 0;
+}
+
+.cal-day-task-text {
+  font-size: 14px;
+  color: #ddd;
+  line-height: 1.4;
+  flex: 1;
+  min-width: 0;
+  word-break: break-word;
+}
+
+.cal-day-task-notes {
+  margin-top: 7px;
+  padding-top: 7px;
+  border-top: 1px solid rgba(128, 128, 128, 0.1);
+  font-size: 12px;
+  color: #666;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 </style>
