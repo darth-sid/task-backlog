@@ -65,6 +65,12 @@ const STATUS_COLORS: Record<Status, string> = {
 const TASKS_KEY = 'sid-tasks'
 const TAGS_KEY = 'sid-tags'
 const SETTINGS_KEY = 'sid-settings'
+const SYNC_KEY = 'sid-syncedAt'
+const SYNC_API = '/api/sync'
+const SYNC_SECRET = import.meta.env.VITE_SYNC_SECRET as string | undefined
+
+const syncStatus = ref<'idle' | 'syncing' | 'synced' | 'offline'>('idle')
+let syncDebounceTimer: ReturnType<typeof setTimeout> | null = null
 
 const DEFAULT_PRIORITY: Priority = 'medium'
 const ALL_PRIORITIES: Priority[] = ['critical', 'high', 'medium', 'low', 'minimal']
@@ -157,6 +163,7 @@ function onDocumentKeydown(e: KeyboardEvent): void {
 
 onUnmounted(() => {
   if (midnightTimer !== null) clearTimeout(midnightTimer)
+  if (syncDebounceTimer !== null) clearTimeout(syncDebounceTimer)
   document.removeEventListener('dragover', onDocumentDragOver)
   document.removeEventListener('drop', onDocumentDrop)
   document.removeEventListener('keydown', onDocumentKeydown)
@@ -197,18 +204,22 @@ onMounted(() => {
   } catch (e) {
     console.log('No saved data yet')
   }
+  syncOnMount()
 })
 
 watch(tasks, (val) => {
   localStorage.setItem(TASKS_KEY, JSON.stringify(val))
+  scheduleDebouncedSync()
 }, { deep: true })
 
 watch(tags, (val) => {
   localStorage.setItem(TAGS_KEY, JSON.stringify(val))
+  scheduleDebouncedSync()
 }, { deep: true })
 
 watch(settings, (val) => {
   localStorage.setItem(SETTINGS_KEY, JSON.stringify(val))
+  scheduleDebouncedSync()
 }, { deep: true })
 
 watch(activePriorities, (active) => {
@@ -217,6 +228,71 @@ watch(activePriorities, (active) => {
     newPriority.value = projectPriority(newPriority.value, active)
   }
 })
+
+function buildSyncPayload() {
+  return { tasks: tasks.value, tags: tags.value, settings: settings.value, savedAt: new Date().toISOString() }
+}
+
+async function fetchCloudData(): Promise<{ tasks: typeof tasks.value; tags: typeof tags.value; settings: typeof settings.value; savedAt: string } | null> {
+  if (!SYNC_SECRET) return null
+  try {
+    const res = await fetch(SYNC_API, { headers: { Authorization: `Bearer ${SYNC_SECRET}` } })
+    if (!res.ok) return null
+    const json = await res.json()
+    return json.data
+  } catch {
+    return null
+  }
+}
+
+async function pushToCloud(): Promise<boolean> {
+  if (!SYNC_SECRET) return false
+  try {
+    const res = await fetch(SYNC_API, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${SYNC_SECRET}` },
+      body: JSON.stringify(buildSyncPayload()),
+    })
+    return res.ok
+  } catch {
+    return false
+  }
+}
+
+async function syncOnMount() {
+  if (!SYNC_SECRET) return
+  syncStatus.value = 'syncing'
+  const cloud = await fetchCloudData()
+  if (cloud === null) {
+    const ok = await pushToCloud()
+    syncStatus.value = ok ? 'synced' : 'offline'
+    if (ok) localStorage.setItem(SYNC_KEY, new Date().toISOString())
+    return
+  }
+  const localSyncedAt = localStorage.getItem(SYNC_KEY)
+  const cloudIsNewer = !localSyncedAt || cloud.savedAt > localSyncedAt
+  if (cloudIsNewer) {
+    tasks.value = cloud.tasks
+    tags.value = cloud.tags
+    settings.value = { ...settings.value, ...cloud.settings }
+    localStorage.setItem(SYNC_KEY, cloud.savedAt)
+  } else {
+    const ok = await pushToCloud()
+    if (ok) localStorage.setItem(SYNC_KEY, new Date().toISOString())
+  }
+  syncStatus.value = 'synced'
+}
+
+function scheduleDebouncedSync() {
+  if (!SYNC_SECRET) return
+  if (syncDebounceTimer) clearTimeout(syncDebounceTimer)
+  syncStatus.value = 'syncing'
+  syncDebounceTimer = setTimeout(async () => {
+    const ok = await pushToCloud()
+    syncStatus.value = ok ? 'synced' : 'offline'
+    if (ok) localStorage.setItem(SYNC_KEY, new Date().toISOString())
+  }, 1000)
+}
 
 function today(): string {
   return todayStr.value
@@ -808,6 +884,7 @@ const unscheduledTasks = computed((): Task[] => {
           >cal</button>
         </div>
         <span class="count">{{ activeCount > 0 ? `${activeCount} pending` : 'all clear' }}</span>
+        <span v-if="SYNC_SECRET" class="sync-dot" :class="syncStatus" :title="syncStatus" />
         <button class="settings-btn" :class="{ active: showSettings }" @click="showSettings = !showSettings" title="Settings">⚙</button>
       </div>
     </div>
@@ -2977,5 +3054,17 @@ const unscheduledTasks = computed((): Task[] => {
   white-space: pre-wrap;
   word-break: break-word;
 }
+
+.sync-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  transition: background 0.3s;
+}
+.sync-dot.idle    { background: #444; }
+.sync-dot.syncing { background: #da0; }
+.sync-dot.synced  { background: #6c6; }
+.sync-dot.offline { background: #e55; }
 
 </style>
