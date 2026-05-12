@@ -1074,6 +1074,17 @@ const unscheduledTasks = computed((): Task[] => {
             >{{ getTag(tagId)?.name }}</span>
           </div>
           <div v-if="expandedTaskId === task.id" class="task-notes" @click.stop>
+            <div class="task-meta-edit">
+              <span class="task-meta-label">due</span>
+              <input
+                type="date"
+                class="task-date-inline"
+                :value="task.deadline ?? ''"
+                @change="task.deadline = ($event.target as HTMLInputElement).value || null"
+                @click.stop
+              />
+              <button v-if="task.deadline" class="task-date-clear-btn" @click.stop="task.deadline = null" title="Clear deadline">×</button>
+            </div>
             <textarea
               class="notes-textarea"
               v-model="task.notes"
@@ -1376,6 +1387,17 @@ const unscheduledTasks = computed((): Task[] => {
                       borderColor: getTag(tagId)?.color + '40',
                     }"
                   >{{ getTag(tagId)?.name }}</span>
+                </div>
+                <div class="task-meta-edit">
+                  <span class="task-meta-label">due</span>
+                  <input
+                    type="date"
+                    class="task-date-inline"
+                    :value="task.deadline ?? ''"
+                    @change="task.deadline = ($event.target as HTMLInputElement).value || null"
+                    @click.stop
+                  />
+                  <button v-if="task.deadline" class="task-date-clear-btn" @click.stop="task.deadline = null" title="Clear deadline">×</button>
                 </div>
                 <textarea
                   class="notes-textarea pin-notes-textarea"
@@ -2122,6 +2144,48 @@ const unscheduledTasks = computed((): Task[] => {
 
 .notes-textarea:focus { border-color: rgba(100, 180, 255, 0.35); }
 .notes-textarea::placeholder { color: #444; }
+
+.task-meta-edit {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.task-meta-label {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  color: #555;
+  min-width: 24px;
+}
+
+.task-date-inline {
+  background: rgba(128, 128, 128, 0.08);
+  border: 1px solid rgba(128, 128, 128, 0.2);
+  border-radius: 5px;
+  color: #aaa;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  padding: 3px 7px;
+  outline: none;
+  cursor: pointer;
+  transition: border-color 0.15s;
+}
+
+.task-date-inline:focus { border-color: rgba(100, 180, 255, 0.35); }
+
+.task-date-clear-btn {
+  background: none;
+  border: none;
+  color: #555;
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 2px;
+  transition: color 0.15s;
+}
+
+.task-date-clear-btn:hover { color: #e55; }
 
 .priority-picker {
   position: absolute;
