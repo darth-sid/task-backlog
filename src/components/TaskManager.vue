@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
+import TagPillList from './TagPillList.vue'
+import PriorityPicker from './PriorityPicker.vue'
 
 interface Tag {
   id: number
@@ -25,10 +27,17 @@ interface Task {
 
 type DeadlineStatus = 'overdue' | 'today' | 'soon' | 'later'
 type FilterMode = 'active' | 'all' | 'done'
+type ViewMode = 'list' | 'kanban' | 'calendar'
 
 interface FormattedDeadline {
   status: DeadlineStatus
   text: string
+}
+
+interface Settings {
+  priorityCount: number
+  showPinboard: boolean
+  viewMode: ViewMode
 }
 
 const openPicker = ref<{ type: 'priority' | 'status'; taskId: number } | null>(null)
@@ -90,14 +99,39 @@ const PRIORITY_SETS: Record<number, Priority[]> = {
   5: ['critical', 'high', 'medium', 'low', 'minimal'],
 }
 
-const todayStr = ref(new Date().toISOString().split('T')[0])
+const VIEW_MODES: ViewMode[] = ['list', 'kanban', 'calendar']
+const DEFAULT_SETTINGS: Settings = { priorityCount: 3, showPinboard: true, viewMode: 'list' }
+
+function localDateString(date: Date = new Date()): string {
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
+}
+
+function normalizeSettings(raw: unknown): Settings {
+  if (!raw || typeof raw !== 'object') return { ...DEFAULT_SETTINGS }
+  const candidate = raw as Partial<Settings>
+  const priorityCount = typeof candidate.priorityCount === 'number' && PRIORITY_SETS[candidate.priorityCount]
+    ? candidate.priorityCount
+    : DEFAULT_SETTINGS.priorityCount
+  const showPinboard = typeof candidate.showPinboard === 'boolean'
+    ? candidate.showPinboard
+    : DEFAULT_SETTINGS.showPinboard
+  const viewMode = typeof candidate.viewMode === 'string' && VIEW_MODES.includes(candidate.viewMode as ViewMode)
+    ? candidate.viewMode as ViewMode
+    : DEFAULT_SETTINGS.viewMode
+  return { priorityCount, showPinboard, viewMode }
+}
+
+const todayStr = ref(localDateString())
 let midnightTimer: ReturnType<typeof setTimeout> | null = null
 
 function scheduleMidnightTick() {
   const now = new Date()
   const msUntilMidnight = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1).getTime() - now.getTime()
   midnightTimer = setTimeout(() => {
-    todayStr.value = new Date().toISOString().split('T')[0]
+    todayStr.value = localDateString()
     scheduleMidnightTick()
   }, msUntilMidnight)
 }
@@ -114,7 +148,7 @@ const filterTag = ref<number | null>(null)
 const inputEl = ref<HTMLInputElement | null>(null)
 
 // Settings
-const settings = ref({ priorityCount: 3, showPinboard: true, viewMode: 'list' as 'list' | 'kanban' | 'calendar' })
+const settings = ref<Settings>({ ...DEFAULT_SETTINGS })
 
 const calendarYear = ref(new Date().getFullYear())
 const calendarMonth = ref(new Date().getMonth())
@@ -161,6 +195,22 @@ function onDocumentKeydown(e: KeyboardEvent): void {
   }
 }
 
+type LegacyTask = Task & { done?: boolean; pinned?: boolean }
+
+function migrateTasks(raw: LegacyTask[]): Task[] {
+  let nextLegacyPinSlot = 0
+  return raw.map(t => {
+    if (!t.status) t.status = t.done ? 'done' : 'unstarted'
+    if (!t.startDate) t.startDate = t.createdAt ? t.createdAt.split('T')[0] : todayStr.value
+    if (t.notes === undefined) t.notes = ''
+    if (t.pinSlot === undefined) {
+      t.pinSlot = t.pinned && nextLegacyPinSlot < PIN_MAX ? nextLegacyPinSlot++ : null
+    }
+    if (t.pinSlot !== null && (t.pinSlot < 0 || t.pinSlot >= PIN_MAX)) t.pinSlot = null
+    return t
+  })
+}
+
 onUnmounted(() => {
   if (midnightTimer !== null) clearTimeout(midnightTimer)
   if (syncDebounceTimer !== null) clearTimeout(syncDebounceTimer)
@@ -176,33 +226,13 @@ onMounted(() => {
   document.addEventListener('keydown', onDocumentKeydown)
   try {
     const savedTasks = localStorage.getItem(TASKS_KEY)
-    if (savedTasks) {
-      const parsed = JSON.parse(savedTasks)
-      // migrate tasks with legacy done boolean
-      let nextLegacyPinSlot = 0
-      tasks.value = parsed.map((t: Task & { done?: boolean; pinned?: boolean; pinSlot?: number | null }) => {
-        if (!t.status) {
-          t.status = t.done ? 'done' : 'unstarted'
-        }
-        if (!t.startDate) {
-          t.startDate = t.createdAt ? t.createdAt.split('T')[0] : today()
-        }
-        if (t.notes === undefined) t.notes = ''
-        if (t.pinSlot === undefined) {
-          t.pinSlot = t.pinned && nextLegacyPinSlot < PIN_MAX ? nextLegacyPinSlot++ : null
-        }
-        if (t.pinSlot !== null && (t.pinSlot < 0 || t.pinSlot >= PIN_MAX)) {
-          t.pinSlot = null
-        }
-        return t
-      })
-    }
+    if (savedTasks) tasks.value = migrateTasks(JSON.parse(savedTasks))
     const savedTags = localStorage.getItem(TAGS_KEY)
     if (savedTags) tags.value = JSON.parse(savedTags)
     const savedSettings = localStorage.getItem(SETTINGS_KEY)
-    if (savedSettings) settings.value = { ...settings.value, ...JSON.parse(savedSettings) }
+    if (savedSettings) settings.value = normalizeSettings(JSON.parse(savedSettings))
   } catch (e) {
-    console.log('No saved data yet')
+    console.warn('Failed to load saved data', e)
   }
   syncOnMount()
 })
@@ -272,9 +302,9 @@ async function syncOnMount() {
   const localSyncedAt = localStorage.getItem(SYNC_KEY)
   const cloudIsNewer = !localSyncedAt || cloud.savedAt > localSyncedAt
   if (cloudIsNewer) {
-    tasks.value = cloud.tasks
+    tasks.value = migrateTasks(cloud.tasks)
     tags.value = cloud.tags
-    settings.value = { ...settings.value, ...cloud.settings }
+    settings.value = normalizeSettings(cloud.settings)
     localStorage.setItem(SYNC_KEY, cloud.savedAt)
   } else {
     const ok = await pushToCloud()
@@ -292,10 +322,6 @@ function scheduleDebouncedSync() {
     syncStatus.value = ok ? 'synced' : 'offline'
     if (ok) localStorage.setItem(SYNC_KEY, new Date().toISOString())
   }, 1000)
-}
-
-function today(): string {
-  return todayStr.value
 }
 
 function daysFromToday(dateStr: string): number {
@@ -317,8 +343,7 @@ function startLabel(task: Task): string | null {
 function formatDate(dateStr: string | null): FormattedDeadline | null {
   if (!dateStr) return null
   const d = new Date(dateStr + 'T00:00:00')
-  const now = new Date()
-  now.setHours(0, 0, 0, 0)
+  const now = new Date(todayStr.value + 'T00:00:00')
   const diff = Math.ceil((d.getTime() - now.getTime()) / (1000 * 60 * 60 * 24))
   if (diff < 0) return { status: 'overdue', text: `${Math.abs(diff)}d overdue` }
   if (diff === 0) return { status: 'today', text: 'Today' }
@@ -386,7 +411,7 @@ function addTask() {
     id: Date.now(),
     text,
     deadline: deadline.value || null,
-    startDate: newStartDate.value || today(),
+    startDate: newStartDate.value || todayStr.value,
     tags: [...selectedTags.value],
     status: 'unstarted',
     priority: newPriority.value,
@@ -694,10 +719,6 @@ function toggleFilterTag(tagId: number): void {
   filterTag.value = filterTag.value === tagId ? null : tagId
 }
 
-function getTag(tagId: number): Tag | undefined {
-  return tags.value.find(t => t.id === tagId)
-}
-
 function borderColor(task: Task): string {
   if (task.status === 'done' || isFuture(task)) return 'transparent'
   const dl = formatDate(task.deadline)
@@ -855,6 +876,50 @@ const unscheduledTasks = computed((): Task[] => {
     return !t.deadline
   })
 })
+
+function downloadData(): void {
+  const payload = JSON.stringify({ tasks: tasks.value, tags: tags.value, settings: settings.value }, null, 2)
+  const blob = new Blob([payload], { type: 'application/json' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `tasks-${todayStr.value}.json`
+  a.click()
+  setTimeout(() => URL.revokeObjectURL(url), 0)
+}
+
+const importError = ref<string | null>(null)
+const importFileEl = ref<HTMLInputElement | null>(null)
+
+function triggerImport(): void {
+  importError.value = null
+  importFileEl.value?.click()
+}
+
+function handleImportFile(e: Event): void {
+  const file = (e.target as HTMLInputElement).files?.[0]
+  if (importFileEl.value) importFileEl.value.value = ''
+  if (!file) return
+  const reader = new FileReader()
+  reader.onload = () => {
+    try {
+      const parsed = JSON.parse(reader.result as string)
+      if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.tasks) || !Array.isArray(parsed.tags)) {
+        importError.value = 'invalid format'
+        return
+      }
+      const taskCount = parsed.tasks.length
+      if (!confirm(`Replace all current data with ${taskCount} task${taskCount !== 1 ? 's' : ''} from "${file.name}"? This cannot be undone.`)) return
+      tasks.value = migrateTasks(parsed.tasks)
+      tags.value = parsed.tags
+      settings.value = normalizeSettings(parsed.settings)
+      importError.value = null
+    } catch {
+      importError.value = 'parse error'
+    }
+  }
+  reader.readAsText(file)
+}
 </script>
 
 <template>
@@ -914,6 +979,15 @@ const unscheduledTasks = computed((): Task[] => {
           >{{ settings.showPinboard ? 'on' : 'off' }}</button>
         </div>
       </div>
+      <div class="settings-row">
+        <span class="settings-label">data</span>
+        <div class="settings-control">
+          <button class="setting-option-btn data-btn" @click="downloadData" title="Download tasks as JSON">↓</button>
+          <button class="setting-option-btn data-btn" @click="triggerImport" title="Upload tasks from JSON">↑</button>
+          <input ref="importFileEl" type="file" accept=".json,application/json" class="hidden-file-input" @change="handleImportFile" />
+        </div>
+        <span v-if="importError" class="settings-hint settings-hint-error">{{ importError }}</span>
+      </div>
     </div>
 
     <!-- Input -->
@@ -930,7 +1004,7 @@ const unscheduledTasks = computed((): Task[] => {
         class="date-input date-input-start"
         :class="{ 'has-value': newStartDate }"
         v-model="newStartDate"
-        :min="today()"
+        :min="todayStr"
         title="Start date (optional)"
       />
       <input
@@ -1098,30 +1172,13 @@ const unscheduledTasks = computed((): Task[] => {
           </div>
         </div>
 
-        <div class="priority-picker-wrap">
-          <button
-            type="button"
-            class="task-priority-dot"
-            :style="{ background: PRIORITY_COLORS[taskDisplayPriority(task)] }"
-            :title="`priority: ${taskDisplayPriority(task)}`"
-            @mousedown.stop
-            @click.stop.prevent="togglePicker('priority', task.id)"
-          ></button>
-          <div v-if="openPicker?.type === 'priority' && openPicker.taskId === task.id" class="priority-picker" @mousedown.stop @click.stop>
-            <button
-              v-for="p in activePriorities"
-              :key="p"
-              type="button"
-              class="priority-picker-option"
-              :class="{ active: taskDisplayPriority(task) === p }"
-              @mousedown.stop
-              @click.stop.prevent="setPriority(task.id, p)"
-            >
-              <span class="priority-dot" :style="{ background: PRIORITY_COLORS[p] }"></span>
-              <span>{{ p }}</span>
-            </button>
-          </div>
-        </div>
+        <PriorityPicker
+          :display-priority="taskDisplayPriority(task)"
+          :active-priorities="activePriorities"
+          :is-open="openPicker?.type === 'priority' && openPicker.taskId === task.id"
+          @toggle="togglePicker('priority', task.id)"
+          @select="setPriority(task.id, $event)"
+        />
 
         <div class="task-content">
           <div class="task-top">
@@ -1129,26 +1186,20 @@ const unscheduledTasks = computed((): Task[] => {
             <span v-if="task.notes" class="notes-indicator" title="has notes">≡</span>
             <span v-if="isFuture(task)" class="start-label">{{ startLabel(task) }}</span>
             <span
-              v-if="formatDate(task.deadline)"
+              v-if="task.deadline"
               class="deadline"
               :style="{ color: deadlineColor(task) }"
             >{{ formatDate(task.deadline)!.text }}</span>
           </div>
           <div v-if="task.tags?.length" class="task-tags">
-            <span
-              v-for="tagId in task.tags"
-              :key="tagId"
-              class="tag-pill small"
-              v-show="getTag(tagId)"
-              draggable="true"
-              @dragstart.stop="onTagDragStart(tagId, $event, task.id)"
-              @dragend="onTagDragEnd"
-              :style="{
-                background: getTag(tagId)?.color + '20',
-                color: getTag(tagId)?.color,
-                borderColor: getTag(tagId)?.color + '40',
-              }"
-            >{{ getTag(tagId)?.name }}</span>
+            <TagPillList
+              :tag-ids="task.tags"
+              :tags="tags"
+              :task-id="task.id"
+              draggable
+              @drag-start="onTagDragStart"
+              @drag-end="onTagDragEnd"
+            />
           </div>
           <div v-if="expandedTaskId === task.id" class="task-notes" @click.stop>
             <div class="task-meta-edit">
@@ -1212,29 +1263,15 @@ const unscheduledTasks = computed((): Task[] => {
             @drop.stop="onTaskTagDrop(task.id, $event)"
           >
             <div class="kanban-card-top">
-              <div class="priority-picker-wrap kanban-priority-wrap" @mousedown.stop @click.stop>
-                <button
-                  type="button"
-                  class="task-priority-dot"
-                  :style="{ background: PRIORITY_COLORS[taskDisplayPriority(task)] }"
-                  :title="`priority: ${taskDisplayPriority(task)}`"
-                  @click.stop.prevent="togglePicker('priority', task.id)"
-                ></button>
-                <div v-if="openPicker?.type === 'priority' && openPicker.taskId === task.id" class="priority-picker kanban-priority-picker" @mousedown.stop @click.stop>
-                  <button
-                    v-for="p in activePriorities"
-                    :key="p"
-                    type="button"
-                    class="priority-picker-option"
-                    :class="{ active: taskDisplayPriority(task) === p }"
-                    @mousedown.stop
-                    @click.stop.prevent="setPriority(task.id, p)"
-                  >
-                    <span class="priority-dot" :style="{ background: PRIORITY_COLORS[p] }"></span>
-                    <span>{{ p }}</span>
-                  </button>
-                </div>
-              </div>
+              <PriorityPicker
+                :display-priority="taskDisplayPriority(task)"
+                :active-priorities="activePriorities"
+                :is-open="openPicker?.type === 'priority' && openPicker.taskId === task.id"
+                wrap-class="kanban-priority-wrap"
+                picker-class="kanban-priority-picker"
+                @toggle="togglePicker('priority', task.id)"
+                @select="setPriority(task.id, $event)"
+              />
               <span class="kanban-card-text" :class="{ 'text-done': task.status === 'done' }">{{ task.text }}</span>
               <button class="kanban-remove-btn" @click.stop="remove(task.id)" title="Remove">×</button>
             </div>
@@ -1247,20 +1284,14 @@ const unscheduledTasks = computed((): Task[] => {
               >{{ formatDate(task.deadline)!.text }}</span>
             </div>
             <div v-if="task.tags?.length" class="task-tags kanban-tags">
-              <span
-                v-for="tagId in task.tags"
-                :key="tagId"
-                class="tag-pill small"
-                v-show="getTag(tagId)"
-                draggable="true"
-                @dragstart.stop="onTagDragStart(tagId, $event, task.id)"
-                @dragend="onTagDragEnd"
-                :style="{
-                  background: getTag(tagId)?.color + '20',
-                  color: getTag(tagId)?.color,
-                  borderColor: getTag(tagId)?.color + '40',
-                }"
-              >{{ getTag(tagId)?.name }}</span>
+              <TagPillList
+                :tag-ids="task.tags"
+                :tags="tags"
+                :task-id="task.id"
+                draggable
+                @drag-start="onTagDragStart"
+                @drag-end="onTagDragEnd"
+              />
             </div>
           </div>
         </div>
@@ -1381,30 +1412,15 @@ const unscheduledTasks = computed((): Task[] => {
             <div class="pin-tile-content">
               <div class="pin-tile-header">
                 <div class="pin-tile-controls">
-                  <div class="priority-picker-wrap pin-priority-wrap">
-                    <button
-                      type="button"
-                      class="task-priority-dot"
-                      :style="{ background: PRIORITY_COLORS[taskDisplayPriority(task)] }"
-                      :title="`priority: ${taskDisplayPriority(task)}`"
-                      @mousedown.stop
-                      @click.stop.prevent="togglePicker('priority', task.id)"
-                    ></button>
-                    <div v-if="openPicker?.type === 'priority' && openPicker.taskId === task.id" class="priority-picker pin-priority-picker" @mousedown.stop @click.stop>
-                      <button
-                        v-for="p in activePriorities"
-                        :key="p"
-                        type="button"
-                        class="priority-picker-option"
-                        :class="{ active: taskDisplayPriority(task) === p }"
-                        @mousedown.stop
-                        @click.stop.prevent="setPriority(task.id, p)"
-                      >
-                        <span class="priority-dot" :style="{ background: PRIORITY_COLORS[p] }"></span>
-                        <span>{{ p }}</span>
-                      </button>
-                    </div>
-                  </div>
+                  <PriorityPicker
+                    :display-priority="taskDisplayPriority(task)"
+                    :active-priorities="activePriorities"
+                    :is-open="openPicker?.type === 'priority' && openPicker.taskId === task.id"
+                    wrap-class="pin-priority-wrap"
+                    picker-class="pin-priority-picker"
+                    @toggle="togglePicker('priority', task.id)"
+                    @select="setPriority(task.id, $event)"
+                  />
                 </div>
 
                 <div class="pin-tile-actions">
@@ -1418,7 +1434,7 @@ const unscheduledTasks = computed((): Task[] => {
               </div>
               <div class="pin-tile-meta">
                 <span v-if="isFuture(task)" class="start-label">{{ startLabel(task) }}</span>
-                <span v-if="formatDate(task.deadline)" class="pin-deadline" :style="{ color: deadlineColor(task) }">{{ formatDate(task.deadline)!.text }}</span>
+                <span v-if="task.deadline" class="pin-deadline" :style="{ color: deadlineColor(task) }">{{ formatDate(task.deadline)!.text }}</span>
               </div>
               <div class="status-picker-wrap pin-status-wrap pin-status-wrap-bottom">
                 <button
@@ -1450,20 +1466,14 @@ const unscheduledTasks = computed((): Task[] => {
                   <button type="button" class="pin-notes-close" @click.stop="openPinnedNotesTaskId = null">×</button>
                 </div>
                 <div v-if="task.tags?.length" class="task-tags pin-notes-tags">
-                  <span
-                    v-for="tagId in task.tags"
-                    :key="tagId"
-                    class="tag-pill small"
-                    v-show="getTag(tagId)"
-                    draggable="true"
-                    @dragstart.stop="onTagDragStart(tagId, $event, task.id)"
-                    @dragend="onTagDragEnd"
-                    :style="{
-                      background: getTag(tagId)?.color + '20',
-                      color: getTag(tagId)?.color,
-                      borderColor: getTag(tagId)?.color + '40',
-                    }"
-                  >{{ getTag(tagId)?.name }}</span>
+                  <TagPillList
+                    :tag-ids="task.tags"
+                    :tags="tags"
+                    :task-id="task.id"
+                    draggable
+                    @drag-start="onTagDragStart"
+                    @drag-end="onTagDragEnd"
+                  />
                 </div>
                 <div class="task-meta-edit">
                   <span class="task-meta-label">due</span>
@@ -1515,18 +1525,8 @@ const unscheduledTasks = computed((): Task[] => {
             <span v-if="task.deadline === focusedCalendarDate" class="cal-chip-badge cal-chip-due" :style="{ color: deadlineColor(task) }">{{ formatDate(task.deadline)!.text }}</span>
             <span class="cal-day-status" :style="{ color: STATUS_COLORS[task.status] }">{{ STATUS_LABELS[task.status] }}</span>
           </div>
-          <div v-if="task.tags?.length" class="task-tags" style="margin-top: 5px;">
-            <span
-              v-for="tagId in task.tags"
-              :key="tagId"
-              class="tag-pill small"
-              v-show="getTag(tagId)"
-              :style="{
-                background: getTag(tagId)?.color + '20',
-                color: getTag(tagId)?.color,
-                borderColor: getTag(tagId)?.color + '40',
-              }"
-            >{{ getTag(tagId)?.name }}</span>
+          <div v-if="task.tags?.length" class="task-tags cal-day-task-tags">
+            <TagPillList :tag-ids="task.tags" :tags="tags" />
           </div>
           <div v-if="task.notes" class="cal-day-task-notes">{{ task.notes }}</div>
         </div>
@@ -1638,11 +1638,24 @@ const unscheduledTasks = computed((): Task[] => {
   color: #6ab4ff;
 }
 
+.setting-option-btn.data-btn {
+  width: 24px;
+  height: 24px;
+  font-size: 13px;
+  line-height: 1;
+}
+
 .settings-hint {
   font-family: 'JetBrains Mono', monospace;
   font-size: 10px;
   color: #444;
 }
+
+.settings-hint-error {
+  color: #e55;
+}
+
+.hidden-file-input { display: none; }
 
 .title {
   font-family: 'JetBrains Mono', monospace;
@@ -1752,8 +1765,6 @@ const unscheduledTasks = computed((): Task[] => {
 
 .tag-pill.selectable:hover { opacity: 0.85; }
 .tag-pill.selectable:active { cursor: grabbing; }
-.tag-pill.small { padding: 1px 7px; font-size: 10px; cursor: grab; }
-.tag-pill.small:active { cursor: grabbing; }
 .tag-pill.preview { cursor: default; }
 
 .new-tag-btn {
@@ -2154,29 +2165,6 @@ const unscheduledTasks = computed((): Task[] => {
   }
 }
 
-/* Priority dot on task row */
-.priority-picker-wrap {
-  position: relative;
-  flex-shrink: 0;
-}
-
-.task-priority-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  border: none;
-  cursor: pointer;
-  padding: 0;
-  display: block;
-  transition: transform 0.15s, opacity 0.15s;
-  opacity: 0.8;
-}
-
-.task-priority-dot:hover {
-  transform: scale(1.4);
-  opacity: 1;
-}
-
 .picker-overlay {
   position: fixed;
   inset: 0;
@@ -2263,43 +2251,6 @@ const unscheduledTasks = computed((): Task[] => {
 }
 
 .task-date-clear-btn:hover { color: #e55; }
-
-.priority-picker {
-  position: absolute;
-  left: 50%;
-  top: 14px;
-  transform: translateX(-50%);
-  background: #1c1c22;
-  border: 1px solid rgba(128, 128, 128, 0.25);
-  border-radius: 8px;
-  padding: 4px;
-  z-index: 100;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 110px;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
-}
-
-.priority-picker-option {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 5px 8px;
-  border: none;
-  background: transparent;
-  color: #aaa;
-  cursor: pointer;
-  border-radius: 5px;
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 11px;
-  text-align: left;
-  transition: background 0.1s;
-  width: 100%;
-}
-
-.priority-picker-option:hover { background: rgba(128, 128, 128, 0.15); color: #e0e0e0; }
-.priority-picker-option.active { color: #e0e0e0; background: rgba(128, 128, 128, 0.12); }
 
 .task-dragging {
   opacity: 0.28;
@@ -2436,8 +2387,7 @@ const unscheduledTasks = computed((): Task[] => {
   min-width: 0;
 }
 
-.pin-status-wrap,
-.pin-priority-wrap {
+.pin-status-wrap {
   flex-shrink: 0;
   margin-top: 0;
 }
@@ -2456,11 +2406,6 @@ const unscheduledTasks = computed((): Task[] => {
   left: -4px;
   top: auto;
   bottom: calc(100% + 4px);
-}
-
-.pin-priority-picker {
-  left: 0;
-  transform: none;
 }
 
 .pin-tile-content {
@@ -2690,17 +2635,6 @@ const unscheduledTasks = computed((): Task[] => {
   display: flex;
   align-items: flex-start;
   gap: 6px;
-}
-
-.kanban-priority-wrap {
-  flex-shrink: 0;
-  margin-top: 4px;
-}
-
-.kanban-priority-picker {
-  left: 0;
-  transform: none;
-  top: 14px;
 }
 
 .kanban-card-text {
@@ -3042,6 +2976,10 @@ const unscheduledTasks = computed((): Task[] => {
   flex: 1;
   min-width: 0;
   word-break: break-word;
+}
+
+.cal-day-task-tags {
+  margin-top: 5px;
 }
 
 .cal-day-task-notes {
